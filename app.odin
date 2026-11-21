@@ -2,6 +2,7 @@ package toom
 
 import "base:runtime"
 import "core:c"
+import "core:os"
 import "core:strings"
 import aideo "../Aideo"
 import "core:thread"
@@ -82,6 +83,13 @@ screen_send:  i32
 screen_owner: u32
 mode_saved:   LayoutMode
 focus_saved:  int
+self_screen_engine: ^aideo.Engine
+self_screen_tile:   Tile
+self_screen_w:      int
+self_screen_h:      int
+share_output:       string
+share_region:       string
+share_cursor:       i32 = 1
 mir_y:       []u8
 mir_u:       []u8
 mir_v:       []u8
@@ -183,7 +191,7 @@ layout_apply :: proc() {
 	tiles: []Tile
 	card: Tile
 	has_card: bool
-	if screen_owner != 0 {
+	if screen_owner != 0 || screen_local_on() {
 		tiles = layout_focus(n + 1, n, self_w, self_h)
 	} else if conf_mode == .Grid {
 		tiles, card, has_card = layout_grid(n, self_w, self_h)
@@ -211,6 +219,9 @@ layout_apply :: proc() {
 			sw2, sh2 = sp.screen_w, sp.screen_h
 		}
 		tile_fit(&tiles[n], sw2, sh2)
+	} else if screen_local_on() {
+		tile_fit(&tiles[n], screen_sw, screen_sh)
+		self_screen_tile = tiles[n]
 	}
 	moved := len(conf_tiles) != n
 	for i in 0..<min(len(conf_tiles), n) {
@@ -238,6 +249,10 @@ layout_apply :: proc() {
 			}
 		}
 		sync.mutex_unlock(&peer_mu)
+		if self_screen_engine != nil {
+			aideo.aideo_close(self_screen_engine)
+			self_screen_engine = nil
+		}
 	}
 	self_tile = tiles[0]
 	if self_engine == nil {
@@ -265,6 +280,10 @@ layout_apply :: proc() {
 		}
 	}
 	sync.mutex_unlock(&peer_mu)
+	if screen_owner == 0 && !screen_local_on() && self_screen_engine != nil {
+		aideo.aideo_close(self_screen_engine)
+		self_screen_engine = nil
+	}
 	delete(conf_tiles)
 	conf_tiles = tiles
 	conf_card = card
@@ -673,6 +692,103 @@ screen_set_owner :: proc(id: u32) {
 	sync.atomic_store(&layout_dirty, 1)
 }
 
+
+
+
+// dump_bgra_bmp writes one BGRA frame to a BMP for debugging.
+dump_bgra_bmp :: proc(path: string, p: []u8, stride, w, h: int) {
+	row := ((w * 3 + 3) / 4) * 4
+	buf := make([]u8, 54 + row * h)
+	buf[0] = 'B'
+	buf[1] = 'M'
+	sz := len(buf)
+	buf[2] = u8(sz)
+	buf[3] = u8(sz >> 8)
+	buf[4] = u8(sz >> 16)
+	buf[5] = u8(sz >> 24)
+	buf[10] = 54
+	buf[14] = 40
+	buf[18] = u8(w)
+	buf[19] = u8(w >> 8)
+	buf[22] = u8(h)
+	buf[23] = u8(h >> 8)
+	buf[26] = 1
+	buf[28] = 24
+	for yy in 0..<h {
+		for x in 0..<w {
+			off := 54 + (h - 1 - yy) * row + x * 3
+			src := yy * stride + x * 4
+			buf[off] = p[src]
+			buf[off + 1] = p[src + 1]
+			buf[off + 2] = p[src + 2]
+		}
+	}
+	_ = os.write_entire_file(path, buf)
+	delete(buf)
+}
+
+// dump_frame_bmp writes one YUV frame to a BMP for debugging.
+dump_frame_bmp :: proc(path: string, y, u, v: [^]u8, sy, sc, w, h: int) {
+	row := ((w * 3 + 3) / 4) * 4
+	buf := make([]u8, 54 + row * h)
+	buf[0] = 'B'
+	buf[1] = 'M'
+	sz := len(buf)
+	buf[2] = u8(sz)
+	buf[3] = u8(sz >> 8)
+	buf[4] = u8(sz >> 16)
+	buf[5] = u8(sz >> 24)
+	buf[10] = 54
+	buf[14] = 40
+	buf[18] = u8(w)
+	buf[19] = u8(w >> 8)
+	buf[22] = u8(h)
+	buf[23] = u8(h >> 8)
+	buf[26] = 1
+	buf[28] = 24
+	for yy in 0..<h {
+		for x in 0..<w {
+			Y := int(y[yy * sy + x]) - 16
+			U := int(u[(yy / 2) * sc + x / 2]) - 128
+			V := int(v[(yy / 2) * sc + x / 2]) - 128
+			r := (298 * Y + 409 * V + 128) >> 8
+			g := (298 * Y - 100 * U - 208 * V + 128) >> 8
+			b := (298 * Y + 516 * U + 128) >> 8
+			r = clamp(r, 0, 255)
+			g = clamp(g, 0, 255)
+			b = clamp(b, 0, 255)
+			off := 54 + (h - 1 - yy) * row + x * 3
+			buf[off] = u8(b)
+			buf[off + 1] = u8(g)
+			buf[off + 2] = u8(r)
+		}
+	}
+	_ = os.write_entire_file(path, buf)
+	delete(buf)
+}
+
+// screen_local_on reports whether the local desktop is being shared.
+screen_local_on :: proc() -> bool {
+	return sync.atomic_load(&screen_ready) != 0 && sync.atomic_load(&screen_send) != 0 && screen_sw > 0
+}
+
+// screen_preview pushes one captured desktop frame into the local
+// preview engine so the sharer sees what is being shared.
+screen_preview :: proc(f: YuvFrame) {
+	if self_screen_engine == nil || self_screen_w != f.w || self_screen_h != f.h {
+		self_screen_w = f.w
+		self_screen_h = f.h
+		if self_screen_tile.bw == 0 {
+			return
+		}
+		if self_screen_engine != nil {
+			aideo.aideo_close(self_screen_engine)
+		}
+		self_screen_engine = engine_new(f.w, f.h, self_screen_tile)
+	}
+	engine_push(self_screen_engine, f)
+}
+
 // screen_frame_in routes one decoded screen frame into the owner
 // engine, recreating it when the source size changes.
 screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
@@ -691,13 +807,71 @@ screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
 	engine_push(p.screen_engine, f)
 }
 
+// slurp_pick runs slurp and returns the picked rectangle text.
+slurp_pick :: proc() -> string {
+	mode: [2]u8
+	mode[0] = 'r'
+	cmd: [8]u8
+	f := clip_popen(to_cstr("slurp", cmd[:]), cast(cstring)&mode[0])
+	if f == nil {
+		return ""
+	}
+	buf: [128]u8
+	res := ""
+	if clip_fgets(raw_data(buf[:]), c.int(len(buf)), f) != nil {
+		n := 0
+		for n < len(buf) && buf[n] != 0 && buf[n] != '\n' {
+			n += 1
+		}
+		res = strings.clone(string(buf[:n]))
+	}
+	_ = clip_pclose(f)
+	return res
+}
+
+// share_region_pick runs slurp and stores the picked region.
+share_region_pick :: proc() {
+	region := slurp_pick()
+	if region == "" {
+		toast_show("region selection cancelled", 0)
+		return
+	}
+	if share_region != "" {
+		delete(share_region)
+	}
+	share_region = region
+	for i in 0..<len(dev_lists[3]) {
+		e := &dev_lists[3][i]
+		if e.path == "region" {
+			e.name = strings.clone(tprintf("region: %s", region))
+		}
+	}
+	toast_show(tprintf("share region %s", region), 1)
+	share_apply()
+}
+
+// share_apply restarts screen sharing so new settings take effect.
+share_apply :: proc() {
+	if sync.atomic_load(&screen_send) == 0 {
+		return
+	}
+	screen_stop()
+	if screen_pipeline_start() {
+		sync.atomic_store(&screen_send, 1)
+		sync.atomic_store(&layout_dirty, 1)
+		toast_show("screen sharing restarted", 1)
+	} else {
+		toast_show("screen sharing failed, compositor needs wlr-screencopy", 2)
+	}
+}
+
 // screen_pipeline_start opens the screen capture so the meeting can
 // send the desktop picture.
 screen_pipeline_start :: proc() -> bool {
 	if sync.atomic_load(&screen_ready) != 0 {
 		return true
 	}
-	if !screen_open(&screen_cap, 0) {
+	if !screen_open_ex(&screen_cap, share_output, share_region, sync.atomic_load(&share_cursor) != 0) {
 		return false
 	}
 	sync.atomic_store(&screen_ready, 1)
@@ -776,6 +950,7 @@ screen_tx_thread :: proc() {
 		last = now
 		if screen_sw != w || screen_sh != h || screen_sws == nil {
 			screen_setup(w, h)
+			sync.atomic_store(&layout_dirty, 1)
 		}
 		srcp := raw_data(data)
 		sstride := c.int(stride)
@@ -800,6 +975,7 @@ screen_tx_thread :: proc() {
 			y = raw_data(screen_y), u = raw_data(screen_u), v = raw_data(screen_v),
 			sy = c.int(w), sc = c.int(w / 2), w = w, h = h,
 		}
+		screen_preview(f)
 		n, key := h264_enc_encode(&screen_enc, f, out)
 		if n > 0 {
 			flags := u8(0)
@@ -1031,8 +1207,18 @@ conf_key :: proc(k: Key) -> bool {
 		switch k.ch {
 		case 'm', 'M':
 			audio_toggle_spk()
+			if sync.atomic_load(&spk_mute) != 0 {
+				toast_show("speaker muted", 0)
+			} else {
+				toast_show("speaker on", 1)
+			}
 		case 'n', 'N':
 			audio_toggle_mic()
+			if sync.atomic_load(&mic_mute) != 0 {
+				toast_show("microphone off", 0)
+			} else {
+				toast_show("microphone on", 1)
+			}
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'c', 'C':
 			if sync.atomic_load(&cam_ready) != 0 {
@@ -1042,6 +1228,9 @@ conf_key :: proc(k: Key) -> bool {
 				if off == 1 {
 					screen_clear()
 					engines_repaint()
+					toast_show("camera off", 0)
+				} else {
+					toast_show("camera on", 1)
 				}
 			} else if cam_pipeline_start() {
 				sync.atomic_store(&cam_off, 0)
@@ -1051,43 +1240,74 @@ conf_key :: proc(k: Key) -> bool {
 					self_engine = nil
 				}
 				layout_apply()
+				toast_show("camera on", 1)
+			} else {
+				toast_show("camera failed to open", 2)
 			}
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'f', 'F':
 			if conf_mode == .Grid {
 				conf_mode = .Focus
+				toast_show("layout: focus", 1)
 			} else {
 				conf_mode = .Grid
+				toast_show("layout: grid", 1)
 			}
 			layout_apply()
 		case 'h', 'H':
 			sync.atomic_store(&self_mirror, 1 - sync.atomic_load(&self_mirror))
+			if sync.atomic_load(&self_mirror) != 0 {
+				toast_show("mirror on", 1)
+			} else {
+				toast_show("mirror off", 0)
+			}
 		case 'a', 'A':
 			if sync.atomic_load(&desk_ready) == 0 {
 				if desk_pipeline_start() {
 					sync.atomic_store(&desk_send, 1)
+					toast_show("desktop audio sharing started", 1)
+				} else {
+					toast_show("desktop audio sharing failed", 2)
 				}
 			} else {
-				sync.atomic_store(&desk_send, 1 - sync.atomic_load(&desk_send))
+				on := 1 - sync.atomic_load(&desk_send)
+				sync.atomic_store(&desk_send, on)
+				if on != 0 {
+					toast_show("desktop audio sharing started", 1)
+				} else {
+					toast_show("desktop audio sharing stopped", 0)
+				}
 			}
 		case 's', 'S':
 			if sync.atomic_load(&screen_ready) == 0 {
 				if screen_pipeline_start() {
 					sync.atomic_store(&screen_send, 1)
+					toast_show("screen sharing started", 1)
+				} else {
+					toast_show("screen sharing failed, compositor needs wlr-screencopy", 2)
 				}
 			} else {
-				sync.atomic_store(&screen_send, 1 - sync.atomic_load(&screen_send))
+				on := 1 - sync.atomic_load(&screen_send)
+				sync.atomic_store(&screen_send, on)
+				if on != 0 {
+					toast_show("screen sharing started", 1)
+				} else {
+					toast_show("screen sharing stopped", 0)
+				}
 			}
+			sync.atomic_store(&layout_dirty, 1)
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'j', 'J':
 			if color_idx > 0 {
 				color_idx -= 1
 				colors_apply()
+				toast_show(tprintf("colors %d", colors_now()), 0)
 			}
 		case 'k', 'K':
 			if color_idx < len(CONF_COLORS) - 1 {
 				color_idx += 1
 				colors_apply()
+				toast_show(tprintf("colors %d", colors_now()), 0)
 			}
 		case '?':
 			sync.atomic_store(&ui_modal, 1)
@@ -1208,11 +1428,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 		}
 		if !help_open && time.since(last_ui) >= 200 * time.Millisecond {
 			last_ui = time.now()
-			backend := "no cam"
-			if sync.atomic_load(&cam_ready) != 0 {
-				backend = h264_enc_backend(&enc)
-			}
-			conf_draw(backend)
+			conf_draw()
 		}
 	}
 
@@ -1255,6 +1471,10 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	if self_engine != nil {
 		aideo.aideo_close(self_engine)
 		self_engine = nil
+	}
+	if self_screen_engine != nil {
+		aideo.aideo_close(self_screen_engine)
+		self_screen_engine = nil
 	}
 	cam_stop(&cam)
 	audio_stop()

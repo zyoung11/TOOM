@@ -49,7 +49,7 @@ colors_now :: proc() -> int {
 
 // conf_draw paints the captions, the info card and the footer in one
 // synchronized frame without touching the picture areas.
-conf_draw :: proc(backend: string) {
+conf_draw :: proc() {
 	b: FB
 	fb_keep(&b)
 	cols, rows := term_size()
@@ -64,7 +64,7 @@ conf_draw :: proc(backend: string) {
 	}
 	caps_draw(&b)
 	card_draw(&b)
-	footer_draw(&b, backend)
+	footer_draw(&b)
 	fb_end(&b)
 }
 
@@ -92,6 +92,14 @@ caps_draw :: proc(b: ^FB) {
 			sel = conf_focus == i + 1,
 		}
 		conf_caption(b, cap)
+	}
+	if screen_owner != 0 {
+		p := peer_get(screen_owner)
+		if p != nil && p.screen_tile.bw > 0 {
+			conf_caption(b, CapInfo{t = p.screen_tile, name = tprintf("%s [sharing]", p.info.name)})
+		}
+	} else if screen_local_on() {
+		conf_caption(b, CapInfo{t = self_screen_tile, name = "screen (me) [sharing]"})
 	}
 }
 
@@ -163,66 +171,100 @@ card_draw :: proc(b: ^FB) {
 	fb_reset(b)
 }
 
-// footer_draw paints the status row and the key row above the bottom
-// edge.
-footer_draw :: proc(b: ^FB, backend: string) {
+// state_word maps a device state to its status word and color.
+state_word :: proc(enabled, active: bool) -> (string, int) {
+	if !enabled {
+		return "off", C_DIM
+	}
+	if active {
+		return "on", C_GREEN
+	}
+	return "off", C_RED
+}
+
+toast_buf: [96]u8
+toast_len: int
+toast_kind: int
+toast_at:  time.Time
+
+// toast_show records a transient message for the key row. Kind 1 is
+// success, 2 is failure and 0 is plain information.
+toast_show :: proc(msg: string, kind: int) {
+	n := min(len(msg), len(toast_buf))
+	copy(toast_buf[:], msg[:n])
+	toast_len = n
+	toast_kind = kind
+	toast_at = time.now()
+}
+
+// toast_active reports whether the toast is still on screen.
+toast_active :: proc() -> bool {
+	return toast_len > 0 && time.since(toast_at) < 2500 * time.Millisecond
+}
+
+// footer_draw paints the centered status row and the key row.
+footer_draw :: proc(b: ^FB) {
 	cols, rows := term_size()
-	cam_mark, cam_col := state_mark(sync.atomic_load(&cam_ready) != 0, sync.atomic_load(&send_video) != 0)
-	mic_mark, mic_col := state_mark(mic_enabled, sync.atomic_load(&mic_mute) == 0)
-	spk_mark, spk_col := state_mark(audio_ok, sync.atomic_load(&spk_mute) == 0)
-	desk_mark, desk_col := state_mark(sync.atomic_load(&desk_ready) != 0, sync.atomic_load(&desk_send) != 0)
-	scr_mark, scr_col := state_mark(sync.atomic_load(&screen_ready) != 0, sync.atomic_load(&screen_send) != 0)
-	members := 1 + peer_count()
-	status := make([dynamic]Piece, 0, 10)
+	cam_word, cam_col := state_word(sync.atomic_load(&cam_ready) != 0, sync.atomic_load(&send_video) != 0)
+	mic_word, mic_col := state_word(mic_enabled, sync.atomic_load(&mic_mute) == 0)
+	spk_word, spk_col := state_word(audio_ok, sync.atomic_load(&spk_mute) == 0)
+	desk_word, desk_col := state_word(sync.atomic_load(&desk_ready) != 0, sync.atomic_load(&desk_send) != 0)
+	scr_word, scr_col := state_word(sync.atomic_load(&screen_ready) != 0, sync.atomic_load(&screen_send) != 0)
+	cam_pri := 5
+	if sync.atomic_load(&send_video) != 0 {
+		cam_pri = 1
+	}
+	desk_pri := 6
+	if sync.atomic_load(&desk_send) != 0 {
+		desk_pri = 3
+	}
+	scr_pri := 6
+	if sync.atomic_load(&screen_send) != 0 {
+		scr_pri = 3
+	}
+	status := make([dynamic]Piece, 0, 12)
 	defer delete(status)
 	append(&status, Piece{r = sess.room, rc = C_BLUE, rb = true, pri = 0})
-	append(&status, Piece{r = tprintf("%d", members), rc = C_TEXT, pri = 0})
-	append(&status, Piece{l = "cam", r = cam_mark, rc = cam_col, pri = 1})
-	append(&status, Piece{l = "mic", r = mic_mark, rc = mic_col, pri = 1})
-	append(&status, Piece{r = level_bar(int(sync.atomic_load(&cap_level))), rc = C_GREEN, pri = 2})
-	append(&status, Piece{l = "spk", r = spk_mark, rc = spk_col, pri = 1})
-	append(&status, Piece{l = "desk", r = desk_mark, rc = desk_col, pri = 2})
-	append(&status, Piece{l = "scr", r = scr_mark, rc = scr_col, pri = 2})
-	append(&status, Piece{r = level_bar(int(sync.atomic_load(&rx_level))), rc = C_GREEN, pri = 2})
-	append(&status, Piece{r = backend, rc = C_DIM, pri = 3})
-	append(&status, Piece{r = tprintf("%dc", colors_now()), rc = C_DIM, pri = 3})
+	append(&status, Piece{r = tprintf("· %d", 1 + peer_count()), rc = C_TEXT, pri = 0})
+	append(&status, Piece{l = "camera", r = cam_word, rc = cam_col, pri = cam_pri})
+	append(&status, Piece{l = "microphone", r = mic_word, rc = mic_col, pri = 1})
+	append(&status, Piece{r = level_bar(int(sync.atomic_load(&cap_level))), rc = C_GREEN, pri = 7})
+	append(&status, Piece{l = "speaker", r = spk_word, rc = spk_col, pri = 2})
+	append(&status, Piece{r = level_bar(int(sync.atomic_load(&rx_level))), rc = C_GREEN, pri = 7})
+	append(&status, Piece{l = "desktop", r = desk_word, rc = desk_col, pri = desk_pri})
+	append(&status, Piece{l = "screen", r = scr_word, rc = scr_col, pri = scr_pri})
 	append(&status, Piece{
-		r = tprintf("tx %d rx %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)),
+		r = tprintf("↑ %d  ↓ %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)),
 		rc = C_DIM,
-		pri = 4,
+		pri = 8,
 	})
 	row_draw(b, rows - 1, status[:], cols)
-	if quit_armed() {
-		hint := [1]Piece{{r = "press q again to quit   any other key cancels", rc = C_RED, rb = true, pri = 0}}
+	if toast_active() {
+		kind := toast_kind
+		col := C_TEXT
+		if kind == 1 {
+			col = C_GREEN
+		} else if kind == 2 {
+			col = C_RED
+		}
+		hint := [1]Piece{{r = string(toast_buf[:toast_len]), rc = col, rb = true, pri = 0}}
 		row_draw(b, rows, hint[:], cols)
 		return
 	}
-	keys := make([dynamic]Piece, 0, 8)
+	keys := make([dynamic]Piece, 0, 11)
 	defer delete(keys)
 	append(&keys, Piece{l = "q", r = "quit", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 1})
-	append(&keys, Piece{l = "m", r = "spk", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 2})
-	append(&keys, Piece{l = "n", r = "mic", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 3})
-	append(&keys, Piece{l = "c", r = "cam", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 4})
-	append(&keys, Piece{l = "a", r = "desk", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 5})
-	append(&keys, Piece{l = "s", r = "screen", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
+	append(&keys, Piece{l = "s", r = "screen", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 2})
+	append(&keys, Piece{l = "n", r = "microphone", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 3})
+	append(&keys, Piece{l = "m", r = "speaker", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 4})
+	append(&keys, Piece{l = "c", r = "camera", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 5})
+	append(&keys, Piece{l = "a", r = "desktop", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
 	append(&keys, Piece{l = "d", r = "devices", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
 	append(&keys, Piece{l = "f", r = "layout", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 8})
 	append(&keys, Piece{l = "h", r = "mirror", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 9})
 	append(&keys, Piece{l = "j/k", r = "colors", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 10})
-	append(&keys, Piece{l = "Tab ←/→", r = "pick", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 11})
 	append(&keys, Piece{l = "?", r = "help", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 0})
 	row_draw(b, rows, keys[:], cols)
-}
-
-// state_mark maps a device state to its mark and color.
-state_mark :: proc(enabled, active: bool) -> (string, int) {
-	if !enabled {
-		return "○", C_DIM
-	}
-	if active {
-		return "●", C_GREEN
-	}
-	return "○", C_RED
 }
 
 // piece_width returns the printable width of one footer piece.
@@ -234,8 +276,8 @@ piece_width :: proc(p: Piece) -> int {
 	return w
 }
 
-// row_draw drops the highest priority pieces until the row fits and
-// paints the rest. Painting is width clamped so the row never wraps.
+// row_draw drops the highest priority pieces until the row fits,
+// centers the rest and paints them clamped so the row never wraps.
 row_draw :: proc(b: ^FB, row: int, pieces: []Piece, cols: int) {
 	work := make([dynamic]Piece, 0, len(pieces))
 	defer delete(work)
@@ -258,21 +300,31 @@ row_draw :: proc(b: ^FB, row: int, pieces: []Piece, cols: int) {
 		}
 		unordered_remove(&work, worst)
 	}
-	fb_at(b, row, 1)
-	for _ in 0..<cols {
-		fb_str(b, " ")
+	total := -2
+	for p in work {
+		total += piece_width(p) + 2
+	}
+	x := (cols - total) / 2 + 1
+	if x < 1 {
+		x = 1
 	}
 	fb_at(b, row, 1)
+	for i in 0..<cols {
+		fb_str(b, " ")
+	}
 	used := 0
 	for p in work {
-		if used + piece_width(p) + 2 > cols {
+		w := piece_width(p) + 2
+		if used + w > cols {
 			break
 		}
 		if used > 0 {
+			fb_at(b, row, x + used)
 			fb_str(b, "  ")
 			used += 2
 		}
-		piece_draw(b, p, cols - used)
+		fb_at(b, row, x + used)
+		piece_draw(b, p, cols - x - used + 1)
 		used += piece_width(p)
 	}
 	fb_reset(b)
@@ -319,7 +371,7 @@ help_draw :: proc() {
 		{"c", "toggle camera send"},
 		{"a", "toggle system audio sharing"},
 		{"s", "toggle screen sharing"},
-		{"d", "pick input output and camera devices"},
+		{"d", "pick devices and share settings"},
 		{"Up/Down", "raise or lower volume"},
 		{"", "layout"},
 		{"f", "cycle grid and focus layouts"},

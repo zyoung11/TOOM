@@ -1,6 +1,7 @@
 package toom
 
 import "core:c"
+import "core:strings"
 
 // ScreenCap wraps one wlr-screencopy capture session.
 ScreenCap :: struct {
@@ -42,4 +43,45 @@ screen_close :: proc(s: ^ScreenCap) {
 		toom_screen_close(s.handle)
 		s.handle = nil
 	}
+}
+
+// screen_open_ex starts capturing one output with an optional slurp
+// style region.
+screen_open_ex :: proc(s: ^ScreenCap, name, region: string, cursor: bool) -> bool {
+	nbuf: [80]u8
+	rbuf: [128]u8
+	ncstr: cstring = nil
+	rcstr: cstring = nil
+	if name != "" {
+		ncstr = to_cstr(name, nbuf[:])
+	}
+	if region != "" {
+		rcstr = to_cstr(region, rbuf[:])
+	}
+	ci := 0
+	if cursor {
+		ci = 1
+	}
+	s.handle = toom_screen_open_ex(ncstr, rcstr, c.int(ci))
+	return s.handle != nil
+}
+
+// screen_outputs lists the available output names.
+screen_outputs :: proc() -> [dynamic]string {
+	buf := make([]u8, 8192)
+	defer delete(buf)
+	n := int(toom_screen_list(raw_data(buf), 8192))
+	out: [dynamic]string
+	start := 0
+	found := 0
+	for i in 0..<len(buf) {
+		if buf[i] == 0 {
+			if i > start && found < n {
+				append(&out, strings.clone(string(buf[start:i])))
+				found += 1
+			}
+			start = i + 1
+		}
+	}
+	return out
 }

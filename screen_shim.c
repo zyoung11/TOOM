@@ -21,6 +21,18 @@ void toom_screen_close(void* handle);
 
 #define MAX_OUTPUTS 8
 
+struct toom_screen;
+
+struct toom_screen_output {
+	struct toom_screen* owner;
+	int idx;
+	struct wl_output* obj;
+	uint32_t gname;
+	int x;
+	int y;
+	char desc[80];
+};
+
 struct toom_screen {
 	struct wl_display* disp;
 	struct wl_registry* registry;
@@ -31,9 +43,12 @@ struct toom_screen {
 	uint32_t mgr_name;
 	uint32_t mgr_version;
 	uint32_t shm_name;
+	struct toom_screen_output outs[MAX_OUTPUTS];
 	uint32_t out_names[MAX_OUTPUTS];
 	int out_count;
 	int out_pick;
+	int cursor;
+	int rx, ry, rw, rh;
 	int fmt;
 	int w;
 	int h;
@@ -58,7 +73,7 @@ static void registry_global(void* data, struct wl_registry* reg, uint32_t name, 
 	} else if (strcmp(interface, "wl_shm") == 0) {
 		s->shm_name = name;
 	} else if (strcmp(interface, "wl_output") == 0 && s->out_count < MAX_OUTPUTS) {
-		s->out_names[s->out_count] = name;
+		s->outs[s->out_count].gname = name;
 		s->out_count += 1;
 	}
 	(void)data;
@@ -66,7 +81,7 @@ static void registry_global(void* data, struct wl_registry* reg, uint32_t name, 
 
 static void registry_global_remove(void* data, struct wl_registry* reg, uint32_t name) {
 	struct toom_screen* s = data;
-	if (s->out_count > 0 && name == s->out_names[s->out_pick]) {
+	if (s->out_count > 0 && name == s->outs[s->out_pick].gname) {
 		s->dead = 1;
 	}
 }
@@ -84,14 +99,37 @@ static const struct wl_shm_listener shm_listener = {
 };
 
 static void output_geometry(void* data, struct wl_output* output, int32_t x, int32_t y, int32_t phys_w, int32_t phys_h, int32_t subpixel, const char* make, const char* model, int32_t transform) {
+	struct toom_screen_output* o = data;
+	o->x = x;
+	o->y = y;
 }
 
 static void output_mode(void* data, struct wl_output* output, uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
 }
 
+static void output_done(void* data, struct wl_output* output) {
+}
+
+static void output_scale(void* data, struct wl_output* output, int32_t factor) {
+}
+
+static void output_name(void* data, struct wl_output* output, const char* name) {
+	struct toom_screen_output* o = data;
+	if (name) {
+		snprintf(o->desc, sizeof(o->desc), "%s", name);
+	}
+}
+
+static void output_description(void* data, struct wl_output* output, const char* description) {
+}
+
 static const struct wl_output_listener output_listener = {
 	.geometry = output_geometry,
 	.mode = output_mode,
+	.done = output_done,
+	.scale = output_scale,
+	.name = output_name,
+	.description = output_description,
 };
 
 static void buffer_release(void* data, struct wl_buffer* buffer) {
@@ -208,13 +246,67 @@ static const struct zwlr_screencopy_frame_v1_listener frame_listener = {
 };
 
 static void frame_request(struct toom_screen* s) {
-	s->frame = zwlr_screencopy_manager_v1_capture_output(s->mgr, 1, s->output);
+	if (s->rw > 0 && s->rh > 0) {
+		s->frame = zwlr_screencopy_manager_v1_capture_output_region(s->mgr, s->cursor, s->output, s->rx, s->ry, s->rw, s->rh);
+	} else {
+		s->frame = zwlr_screencopy_manager_v1_capture_output(s->mgr, s->cursor, s->output);
+	}
 	wl_proxy_add_listener((struct wl_proxy*)s->frame, (void (**)(void))&frame_listener, s);
 }
 
-// toom_screen_open starts capturing the picked output and returns the
-// capture handle or null on failure.
-void* toom_screen_open(int output_index) {
+static void output_bind_all(struct toom_screen* s) {
+	for (int i = 0; i < s->out_count; i++) {
+		s->outs[i].owner = s;
+		s->outs[i].idx = i;
+		s->outs[i].obj = (struct wl_output*)wl_registry_bind(s->registry, s->outs[i].gname, &wl_output_interface, 4);
+		wl_proxy_add_listener((struct wl_proxy*)s->outs[i].obj, (void (**)(void))&output_listener, &s->outs[i]);
+	}
+}
+
+// toom_screen_list fills buf with one output per line in the form
+// name<TAB>description<NUL> and returns the output count.
+int toom_screen_list(char* buf, int cap) {
+	if (wl_shim_init() != 0 || !buf || cap < 1) {
+		return 0;
+	}
+	buf[0] = 0;
+	struct toom_screen s;
+	memset(&s, 0, sizeof(s));
+	s.disp = wl_display_connect(NULL);
+	if (!s.disp) {
+		return 0;
+	}
+	union wl_argument none[1];
+	memset(none, 0, sizeof(none));
+	s.registry = (struct wl_registry*)wl_proxy_marshal_array_flags((struct wl_proxy*)s.disp, WL_DISPLAY_GET_REGISTRY, &wl_registry_interface, 1, 0, none);
+	wl_proxy_add_listener((struct wl_proxy*)s.registry, (void (**)(void))&registry_listener, &s);
+	wl_display_roundtrip(s.disp);
+	output_bind_all(&s);
+	wl_display_roundtrip(s.disp);
+	int pos = 0;
+	for (int i = 0; i < s.out_count; i++) {
+		const char* nm = s.outs[i].desc[0] ? s.outs[i].desc : "?";
+		int n = snprintf(buf + pos, (size_t)(cap - pos), "%s", nm);
+		if (n < 0 || pos + n + 1 >= cap) {
+			break;
+		}
+		pos += n + 1;
+	}
+	for (int i = 0; i < s.out_count; i++) {
+		if (s.outs[i].obj) {
+			wl_proxy_destroy((struct wl_proxy*)s.outs[i].obj);
+		}
+	}
+	wl_proxy_destroy((struct wl_proxy*)s.registry);
+	wl_display_flush(s.disp);
+	wl_display_disconnect(s.disp);
+	return s.out_count;
+}
+
+// toom_screen_open_ex starts capturing one output. The region is a
+// slurp style rectangle or null for the full output. The name picks
+// the output and may be empty for the first one.
+void* toom_screen_open_ex(const char* name, const char* region, int cursor) {
 	if (wl_shim_init() != 0) {
 		return NULL;
 	}
@@ -224,26 +316,71 @@ void* toom_screen_open(int output_index) {
 	}
 	s->fds[0] = -1;
 	s->fds[1] = -1;
-	s->out_pick = output_index;
+	s->cursor = cursor != 0;
 	s->disp = wl_display_connect(NULL);
 	if (!s->disp) {
 		free(s);
 		return NULL;
 	}
-	s->registry = wl_display_get_registry(s->disp);
+	union wl_argument none[1];
+	memset(none, 0, sizeof(none));
+	s->registry = (struct wl_registry*)wl_proxy_marshal_array_flags((struct wl_proxy*)s->disp, WL_DISPLAY_GET_REGISTRY, &wl_registry_interface, 1, 0, none);
 	wl_proxy_add_listener((struct wl_proxy*)s->registry, (void (**)(void))&registry_listener, s);
 	wl_display_roundtrip(s->disp);
-	if (s->mgr_name == 0 || s->shm_name == 0 || s->out_count == 0 || s->out_pick >= s->out_count) {
+	if (s->mgr_name == 0 || s->shm_name == 0 || s->out_count == 0) {
 		toom_screen_close(s);
 		return NULL;
+	}
+	output_bind_all(s);
+	wl_display_roundtrip(s->disp);
+	s->out_pick = 0;
+	if (name && name[0]) {
+		for (int i = 0; i < s->out_count; i++) {
+			if (strcmp(s->outs[i].desc, name) == 0) {
+				s->out_pick = i;
+				break;
+			}
+		}
 	}
 	s->mgr = (struct zwlr_screencopy_manager_v1*)wl_registry_bind(s->registry, s->mgr_name, &zwlr_screencopy_manager_v1_interface, s->mgr_version);
 	s->shm = (struct wl_shm*)wl_registry_bind(s->registry, s->shm_name, &wl_shm_interface, 1);
 	wl_proxy_add_listener((struct wl_proxy*)s->shm, (void (**)(void))&shm_listener, s);
-	s->output = (struct wl_output*)wl_registry_bind(s->registry, s->out_names[s->out_pick], &wl_output_interface, 1);
-	wl_proxy_add_listener((struct wl_proxy*)s->output, (void (**)(void))&output_listener, s);
+	s->output = s->outs[s->out_pick].obj;
+	if (region && region[0]) {
+		int rw = 0, rh = 0;
+		char out_name[80];
+		out_name[0] = 0;
+		int nx = 0, ny = 0;
+		if (sscanf(region, "%d,%d %dx%d %79s", &nx, &ny, &rw, &rh, out_name) >= 4) {
+			int ox = 0, oy = 0;
+			if (out_name[0]) {
+				for (int i = 0; i < s->out_count; i++) {
+					if (strcmp(s->outs[i].desc, out_name) == 0) {
+						s->out_pick = i;
+						s->output = s->outs[i].obj;
+						ox = s->outs[i].x;
+						oy = s->outs[i].y;
+						break;
+					}
+				}
+			} else {
+				ox = s->outs[s->out_pick].x;
+				oy = s->outs[s->out_pick].y;
+			}
+			s->rx = nx - ox;
+			s->ry = ny - oy;
+			s->rw = rw;
+			s->rh = rh;
+		}
+	}
 	frame_request(s);
 	return s;
+}
+
+// toom_screen_open starts capturing the first output in full.
+void* toom_screen_open(int output_index) {
+	(void)output_index;
+	return toom_screen_open_ex(NULL, NULL, 1);
 }
 
 // toom_screen_poll pumps the Wayland connection until a frame is

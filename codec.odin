@@ -5,7 +5,7 @@ import "core:c"
 PIX_FMT_YUV420P  :: 0
 PIX_FMT_YUYV422  :: 1
 PIX_FMT_YUVJ420P :: 12
-PIX_FMT_BGRA     :: 29
+PIX_FMT_BGRA     :: 28
 
 YuvFrame :: struct {
 	y, u, v: [^]u8,

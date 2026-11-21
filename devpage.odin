@@ -5,9 +5,10 @@ import "core:c"
 import "core:fmt"
 import "core:strings"
 import "core:unicode/utf8"
+import "core:sync"
 import ma "../Aideo/miniaudio"
 
-device_folders := [3]string{"Audio input", "Audio output", "Camera"}
+device_folders := [4]string{"Audio input", "Audio output", "Camera", "Share"}
 
 // DevEnt is one entry in a device folder list.
 DevEnt :: struct {
@@ -17,10 +18,10 @@ DevEnt :: struct {
 	is_default: bool,
 }
 
-dev_lists:  [3][dynamic]DevEnt
+dev_lists:  [4][dynamic]DevEnt
 mon_list:   [dynamic]DevEnt
-dev_cur:    [3]int
-dev_sel:    [3]int
+dev_cur:    [4]int
+dev_sel:    [4]int
 dev_inited: bool
 cam_sel:    int
 
@@ -155,7 +156,8 @@ dev_init :: proc() {
 	dev_lists[1] = audio_enum_devs(false)
 	dev_lists[2] = cam_enum_devs()
 	mon_list = audio_enum_mon()
-	for f in 0..<3 {
+	dev_share_init()
+	for f in 0..<4 {
 		dev_sel[f] = 0
 		dev_cur[f] = 0
 	}
@@ -170,11 +172,46 @@ dev_init :: proc() {
 
 
 
+// dev_share_init fills the share folder with the outputs and the
+// region and cursor settings.
+dev_share_init :: proc() {
+	outs := screen_outputs()
+	defer delete(outs)
+	for o in outs {
+		append(&dev_lists[3], DevEnt{name = strings.clone(o), path = strings.clone(o)})
+	}
+	append(&dev_lists[3], DevEnt{name = "region: full output", path = "region"})
+	append(&dev_lists[3], DevEnt{name = "cursor: show", path = "cursor"})
+}
+
+// dev_share_pick applies one pick inside the share folder.
+dev_share_pick :: proc(idx: int) {
+	if idx < 0 || idx >= len(dev_lists[3]) {
+		return
+	}
+	e := &dev_lists[3][idx]
+	if e.path == "region" {
+		share_region_pick()
+	} else if e.path == "cursor" {
+		sync.atomic_store(&share_cursor, 1 - sync.atomic_load(&share_cursor))
+		if share_cursor != 0 {
+			e.name = "cursor: show"
+		} else {
+			e.name = "cursor: hide"
+		}
+		share_apply()
+	} else {
+		dev_sel[3] = idx
+		share_output = strings.clone(e.path)
+		share_apply()
+	}
+}
+
 // dev_dir remembers the folder column cursor across menu visits.
 dev_dir: int
 
 // dev_off remembers the scroll position of every folder list.
-dev_off: [3]int
+dev_off: [4]int
 
 // scroll_offset keeps the cursor visible with the smallest move.
 scroll_offset :: proc(offset, cursor, list_h: int) -> int {
@@ -372,10 +409,14 @@ dev_run :: proc() {
 			}
 		}
 		if pick {
-			dev_sel[folder] = dev_cur[folder]
-			if folder == 2 && dev_cur[2] < len(dev_lists[2]) {
-				cam_sel = dev_cur[2]
-				cam_dev = dev_lists[2][dev_cur[2]].path
+			if folder == 3 {
+				dev_share_pick(dev_cur[3])
+			} else {
+				dev_sel[folder] = dev_cur[folder]
+				if folder == 2 && dev_cur[2] < len(dev_lists[2]) {
+					cam_sel = dev_cur[2]
+					cam_dev = dev_lists[2][dev_cur[2]].path
+				}
 			}
 			dev_move(&folder, inside, 1)
 		}

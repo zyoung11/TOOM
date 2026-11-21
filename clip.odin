@@ -20,6 +20,8 @@ foreign cliplib {
 	clip_fputs :: proc(s: cstring, f: rawptr) -> c.int ---
 	@(link_name="pclose")
 	clip_pclose :: proc(f: rawptr) -> c.int ---
+	@(link_name="fgets")
+	clip_fgets :: proc(s: rawptr, n: c.int, f: rawptr) -> rawptr ---
 }
 
 // to_cstr copies s into buf as a NUL terminated string.
