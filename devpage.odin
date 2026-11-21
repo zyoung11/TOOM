@@ -23,7 +23,6 @@ mon_list:   [dynamic]DevEnt
 dev_cur:    [7]int
 dev_sel:    [7]int
 dev_inited: bool
-cam_sel:    int
 
 // cstr_dup copies a NUL terminated char buffer into a string.
 cstr_dup :: proc(chars: rawptr) -> string {
@@ -71,7 +70,7 @@ id_is_monitor :: proc(id: ^ma.device_id) -> bool {
 // monitor loopback sources.
 audio_enum_devs :: proc(capture: bool) -> [dynamic]DevEnt {
 	out := make([dynamic]DevEnt, 0, 8)
-	append(&out, DevEnt{name = "System default", is_default = true})
+	append(&out, DevEnt{name = strings.clone("System default"), is_default = true})
 	ctx: ma.context_type
 	if ma.context_init(nil, 0, nil, &ctx) != .SUCCESS {
 		return out
@@ -147,41 +146,116 @@ cam_enum_devs :: proc() -> [dynamic]DevEnt {
 	return out
 }
 
-// dev_init enumerates every device folder once per program run.
+// dev_init builds the static settings lists once per program run.
 dev_init :: proc() {
 	if dev_inited {
 		return
 	}
+	dev_settings_init()
+	dev_inited = true
+}
+
+// dev_list_free releases one device list with its cloned strings.
+dev_list_free :: proc(l: ^[dynamic]DevEnt) {
+	for e in l^ {
+		if len(e.name) > 0 {
+			delete(e.name)
+		}
+		if len(e.path) > 0 {
+			delete(e.path)
+		}
+	}
+	delete(l^)
+	l^ = nil
+}
+
+// dev_sel_id returns the device id of one audio folder pick.
+dev_sel_id :: proc(folder: int) -> string {
+	if dev_sel[folder] <= 0 || dev_sel[folder] >= len(dev_lists[folder]) {
+		return ""
+	}
+	return id_str(&dev_lists[folder][dev_sel[folder]].id)
+}
+
+// dev_match_id finds the list index carrying one device id.
+dev_match_id :: proc(list: [dynamic]DevEnt, id: string) -> int {
+	if id != "" {
+		for i in 0..<len(list) {
+			if id_str(&list[i].id) == id {
+				return i
+			}
+		}
+	}
+	return 0
+}
+
+cam_dev_owned: bool
+
+// cam_set installs the active camera path with owned storage.
+cam_set :: proc(path: string) {
+	if cam_dev_owned {
+		delete(cam_dev)
+	}
+	cam_dev = strings.clone(path)
+	cam_dev_owned = true
+}
+
+// dev_refresh rebuilds the device lists on every visit and keeps the
+// picked devices selected by identity so hot plug shows up at once.
+dev_refresh :: proc() {
+	in_id := strings.clone(dev_sel_id(0))
+	out_id := strings.clone(dev_sel_id(1))
+	dev_list_free(&dev_lists[0])
+	dev_list_free(&dev_lists[1])
+	dev_list_free(&dev_lists[2])
+	dev_list_free(&dev_lists[3])
+	dev_list_free(&mon_list)
 	dev_lists[0] = audio_enum_devs(true)
 	dev_lists[1] = audio_enum_devs(false)
 	dev_lists[2] = cam_enum_devs()
-	mon_list = audio_enum_mon()
 	dev_share_init()
-	dev_settings_init()
-	for f in 0..<7 {
-		dev_sel[f] = 0
-		dev_cur[f] = 0
-	}
+	mon_list = audio_enum_mon()
+	dev_sel[0] = dev_match_id(dev_lists[0], in_id)
+	dev_sel[1] = dev_match_id(dev_lists[1], out_id)
+	dev_sel[2] = 0
 	for e, i in dev_lists[2] {
 		if e.path == cam_dev {
 			dev_sel[2] = i
-			dev_cur[2] = i
 		}
 	}
-	dev_inited = true
+	dev_sel[3] = 0
+	for e, i in dev_lists[3] {
+		if share_output != "" && e.path == share_output {
+			dev_sel[3] = i
+		}
+	}
+	for f in 0..<4 {
+		dev_cur[f] = dev_sel[f]
+	}
+	dev_settings_refresh()
+	if len(in_id) > 0 {
+		delete(in_id)
+	}
+	if len(out_id) > 0 {
+		delete(out_id)
+	}
 }
 
 
 
 // dev_share_init fills the share folder with the outputs and the
-// region and cursor settings.
+// cursor setting.
 dev_share_init :: proc() {
 	outs := screen_outputs()
 	defer delete(outs)
 	for o in outs {
-		append(&dev_lists[3], DevEnt{name = strings.clone(o), path = strings.clone(o)})
+		append(&dev_lists[3], DevEnt{name = o, path = strings.clone(o)})
 	}
-	append(&dev_lists[3], DevEnt{name = strings.clone("cursor: show"), path = strings.clone("cursor")})
+	label := "cursor: hide"
+	if sync.atomic_load(&share_cursor) != 0 {
+		label = "cursor: show"
+	}
+	append(&dev_lists[3], DevEnt{name = strings.clone(label), path = strings.clone("cursor")})
 }
 
 // dev_share_pick applies one pick inside the share folder.
@@ -190,6 +264,7 @@ dev_share_pick :: proc(idx: int) {
 		return
 	}
 	e := &dev_lists[3][idx]
+	sharing := sync.atomic_load(&screen_send) != 0
 	if e.path == "cursor" {
 		sync.atomic_store(&share_cursor, 1 - sync.atomic_load(&share_cursor))
 		if sync.atomic_load(&share_cursor) != 0 {
@@ -197,11 +272,26 @@ dev_share_pick :: proc(idx: int) {
 		} else {
 			dev_set_name(e, "cursor: hide")
 		}
-		share_apply()
+		if sharing {
+			share_apply()
+		} else {
+			v := "off"
+			if sync.atomic_load(&share_cursor) != 0 {
+				v = "on"
+			}
+			toast_show(tprintf("share cursor %s", v), 0)
+		}
 	} else {
 		dev_sel[3] = idx
+		if len(share_output) > 0 {
+			delete(share_output)
+		}
 		share_output = strings.clone(e.path)
-		share_apply()
+		if sharing {
+			share_apply()
+		} else {
+			toast_show(tprintf("share target %s", e.path), 0)
+		}
 	}
 }
 
@@ -242,13 +332,14 @@ dev_settings_refresh :: proc() {
 			dev_set_name(e, tprintf("colors: %d", colors_now()))
 		case "layout":
 			v := "grid"
-			if conf_mode == .Focus {
+			if screen_owner != 0 || screen_local_on() {
+				v = "share"
+			} else if conf_mode == .Focus {
 				v = "focus"
 			}
 			dev_set_name(e, tprintf("layout: %s", v))
 		case "volume":
-			vol := transmute(f32)u32(sync.atomic_load(&spk_vol_bits))
-			dev_set_name(e, tprintf("volume: %d%%", int(vol * 100)))
+			dev_set_name(e, tprintf("volume: %d%%", vol_pct()))
 		}
 	}
 	for i in 0..<len(dev_lists[5]) {
@@ -271,9 +362,13 @@ dev_settings_refresh :: proc() {
 			}
 			dev_set_name(e, tprintf("microphone: %s", v))
 		case "speaker":
-			v := "muted"
-			if sync.atomic_load(&spk_mute) == 0 {
-				v = "on"
+			v := "off"
+			if audio_ok {
+				if sync.atomic_load(&spk_mute) == 0 {
+					v = "on"
+				} else {
+					v = "muted"
+				}
 			}
 			dev_set_name(e, tprintf("speaker: %s", v))
 		case "dshare":
@@ -311,7 +406,12 @@ dev_display_pick :: proc(idx: int) {
 	case "layout":
 		conf_key(Key{kind = .Char, ch = 'f'})
 	case "volume":
-		conf_key(Key{kind = .Up})
+		if vol_pct() >= 200 {
+			audio_vol_set(0)
+			toast_show(tprintf("volume %d%%", vol_pct()), 0)
+		} else {
+			conf_key(Key{kind = .Up})
+		}
 	}
 	dev_settings_refresh()
 }
@@ -370,16 +470,33 @@ dev_windows_pick :: proc(idx: int) {
 	if idx < 0 || idx >= len(dev_lists[6]) {
 		return
 	}
+	e := dev_lists[6][idx]
+	if e.path == "none" {
+		toast_show("no window source available", 2)
+		return
+	}
 	dev_sel[6] = idx
+	sharing := sync.atomic_load(&screen_send) != 0
 	if idx == 0 {
 		share_window = 0
-		toast_show("sharing the whole output", 1)
-	} else {
+		if sharing {
+			share_apply()
+		} else {
+			toast_show("share target whole output", 0)
+		}
+	} else if idx - 1 < len(win_entries) {
 		w := win_entries[idx - 1]
 		share_window = w.id
-		toast_show(tprintf("sharing window %s", w.title), 1)
+		if sharing {
+			share_apply()
+		} else {
+			label := w.title
+			if label == "" {
+				label = w.app
+			}
+			toast_show(tprintf("share target %s", label), 0)
+		}
 	}
-	share_apply()
 }
 
 // dev_dir remembers the folder column cursor across menu visits.
@@ -443,6 +560,7 @@ dev_move :: proc(folder: ^int, inside: bool, delta: int) {
 // Enter or Space marks the chosen device and the menu stays open.
 dev_run :: proc() {
 	dev_init()
+	dev_refresh()
 	dev_windows_refresh()
 	folder := dev_dir
 	inside := false
@@ -596,8 +714,7 @@ dev_run :: proc() {
 			} else {
 				dev_sel[folder] = dev_cur[folder]
 				if folder == 2 && dev_cur[2] < len(dev_lists[2]) {
-					cam_sel = dev_cur[2]
-					cam_dev = dev_lists[2][dev_cur[2]].path
+					cam_set(dev_lists[2][dev_cur[2]].path)
 				}
 			}
 			dev_move(&folder, inside, 1)

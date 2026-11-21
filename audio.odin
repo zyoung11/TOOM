@@ -294,6 +294,16 @@ audio_toggle_mic :: proc() {
 	}
 }
 
+// vol_pct returns the speaker volume as a percentage.
+vol_pct :: proc() -> int {
+	return int(transmute(f32)u32(sync.atomic_load(&spk_vol_bits)) * 100)
+}
+
+// audio_vol_set installs one speaker volume level.
+audio_vol_set :: proc(v: f32) {
+	sync.atomic_store(&spk_vol_bits, transmute(u32)f32(v))
+}
+
 audio_vol_add :: proc(delta: f32) {
 	v := transmute(f32)u32(sync.atomic_load(&spk_vol_bits)) + delta
 	if v < 0 {

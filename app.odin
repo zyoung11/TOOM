@@ -500,18 +500,27 @@ cam_switch :: proc() {
 // sixel engines quiet while it is open and applies device changes
 // live.
 dev_modal_run :: proc() {
-	in_sel := dev_sel[0]
-	out_sel := dev_sel[1]
-	old_cam := cam_dev
+	in_id := strings.clone(dev_sel_id(0))
+	out_id := strings.clone(dev_sel_id(1))
+	old_cam := strings.clone(cam_dev)
 	sync.atomic_store(&ui_modal, 1)
 	time.sleep(60 * time.Millisecond)
 	dev_run()
 	sync.atomic_store(&ui_modal, 0)
-	if dev_sel[0] != in_sel || dev_sel[1] != out_sel {
+	if dev_sel_id(0) != in_id || dev_sel_id(1) != out_id {
 		audio_switch()
 	}
 	if cam_dev != old_cam {
 		cam_switch()
+	}
+	if len(in_id) > 0 {
+		delete(in_id)
+	}
+	if len(out_id) > 0 {
+		delete(out_id)
+	}
+	if len(old_cam) > 0 {
+		delete(old_cam)
 	}
 	screen_clear()
 	engines_repaint()
@@ -1173,8 +1182,10 @@ conf_key :: proc(k: Key) -> bool {
 	#partial switch k.kind {
 	case .Up:
 		audio_vol_add(0.1)
+		toast_show(tprintf("volume %d%%", vol_pct()), 0)
 	case .Down:
 		audio_vol_add(-0.1)
+		toast_show(tprintf("volume %d%%", vol_pct()), 0)
 	case .Tab, .Left, .Right:
 		dir := 1
 		if k.kind == .Left {

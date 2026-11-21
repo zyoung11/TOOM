@@ -259,7 +259,7 @@ footer_draw :: proc(b: ^FB) {
 	append(&keys, Piece{l = "m", r = "speaker", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 4})
 	append(&keys, Piece{l = "c", r = "camera", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 5})
 	append(&keys, Piece{l = "a", r = "desktop", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
-	append(&keys, Piece{l = "d", r = "devices", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
+	append(&keys, Piece{l = "d", r = "settings", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
 	append(&keys, Piece{l = "f", r = "layout", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 8})
 	append(&keys, Piece{l = "h", r = "mirror", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 9})
 	append(&keys, Piece{l = "j/k", r = "colors", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 10})
