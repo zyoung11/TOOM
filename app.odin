@@ -523,6 +523,10 @@ capture_thread :: proc() {
 		if cam.fmt == CAM_MJPG {
 			f, _ = dec_feed(&local_dec, data)
 		} else {
+			if len(data) < cam.w * cam.h * 2 {
+				cam_ungrab(&cam)
+				continue
+			}
 			yuyv_to_i420(data, cam.w, cam.h, ybuf, ubuf, vbuf)
 			f = YuvFrame{
 				y = raw_data(ybuf), u = raw_data(ubuf), v = raw_data(vbuf),
@@ -531,6 +535,14 @@ capture_thread :: proc() {
 		}
 		if f.w > 0 && sync.atomic_load(&cam_off) == 0 {
 			if sync.atomic_load(&self_mirror) != 0 {
+				if f.w * f.h > len(mir_y) {
+					delete(mir_y)
+					delete(mir_u)
+					delete(mir_v)
+					mir_y = make([]u8, f.w * f.h)
+					mir_u = make([]u8, f.w * f.h / 4)
+					mir_v = make([]u8, f.w * f.h / 4)
+				}
 				engine_push(self_engine, yuv_flip_h(f, mir_y, mir_u, mir_v))
 			} else {
 				engine_push(self_engine, f)
