@@ -1,17 +1,22 @@
 package toom
 
 import "core:c"
+import "core:math"
 import "core:sync"
 import ma "../Aideo/miniaudio"
 
 AUDIO_RATE    :: 48000
 AUDIO_BLOCK   :: 960
+MON_GAIN      :: 0.25
+MON_CEIL      :: 4096.0
 AUDIO_MIX_MAX :: 32767
 
 cap_ring: RingBuf
 pb_ring:  RingBuf
+mon_ring: RingBuf
 cap_mu:   sync.Mutex
 pb_mu:    sync.Mutex
+mon_mu:   sync.Mutex
 cap_dev:  ma.device
 pb_dev:   ma.device
 audio_ctx: ma.context_type
@@ -168,6 +173,7 @@ pb_cb :: proc "c" (_: ^ma.device, output: rawptr, _in: rawptr, frames: u32) {
 audio_start :: proc() -> bool {
 	ring_init(&cap_ring, AUDIO_RATE * 2)
 	ring_init(&pb_ring, AUDIO_RATE * 2)
+	ring_init(&mon_ring, AUDIO_RATE * 2)
 	sync.atomic_store(&spk_vol_bits, transmute(u32)f32(1.0))
 
 	ctx_config := ma.context_config_init()
@@ -254,6 +260,28 @@ audio_play_push :: proc(samples: []i16) {
 	sync.mutex_lock(&pb_mu)
 	ring_write(&pb_ring, samples)
 	sync.mutex_unlock(&pb_mu)
+}
+
+// audio_monitor_push queues one captured block for local sidetone at
+// a reduced gain with a soft limiter so hot input never blasts.
+audio_monitor_push :: proc(samples: []i16) {
+	buf: [AUDIO_BLOCK]i16
+	n := min(len(samples), len(buf))
+	for i in 0..<n {
+		x := f64(samples[i]) * MON_GAIN
+		buf[i] = i16(MON_CEIL * math.tanh(x / MON_CEIL))
+	}
+	sync.mutex_lock(&mon_mu)
+	ring_write(&mon_ring, buf[:n])
+	sync.mutex_unlock(&mon_mu)
+}
+
+// audio_monitor_pop drains one block of local sidetone audio.
+audio_monitor_pop :: proc(dst: []i16) -> int {
+	sync.mutex_lock(&mon_mu)
+	n := ring_read(&mon_ring, dst)
+	sync.mutex_unlock(&mon_mu)
+	return n
 }
 
 audio_toggle_spk :: proc() {

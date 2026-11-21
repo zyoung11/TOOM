@@ -394,6 +394,7 @@ audio_tx_thread :: proc() {
 			}
 		}
 		level_store(&mic_level, peak)
+		audio_monitor_push(pcm[:])
 		n := opus_enc_encode(&audio_enc, pcm[:], out[:])
 		if n > 0 {
 			seq += 1
@@ -434,6 +435,10 @@ mix_thread :: proc() {
 			}
 		}
 		delete(list)
+		mn := audio_monitor_pop(tmp[:])
+		for i in 0..<mn {
+			mix[i] += tmp[i]
+		}
 		for i in 0..<len(mix) {
 			if mix[i] > AUDIO_MIX_MAX {
 				mix[i] = AUDIO_MIX_MAX
