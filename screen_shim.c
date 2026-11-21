@@ -383,6 +383,19 @@ void* toom_screen_open(int output_index) {
 	return toom_screen_open_ex(NULL, NULL, 1);
 }
 
+// toom_screen_set_region sets the capture region in global logical
+// coordinates. It applies to the next frame request.
+void toom_screen_set_region(void* handle, int x, int y, int w, int h) {
+	struct toom_screen* s = handle;
+	if (!s) {
+		return;
+	}
+	s->rx = x - s->outs[s->out_pick].x;
+	s->ry = y - s->outs[s->out_pick].y;
+	s->rw = w;
+	s->rh = h;
+}
+
 // toom_screen_poll pumps the Wayland connection until a frame is
 // ready. It returns 1 for a frame, 0 on timeout and -1 on failure.
 int toom_screen_poll(void* handle, int timeout_ms) {

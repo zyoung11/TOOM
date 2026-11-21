@@ -37,6 +37,14 @@ screen_frame :: proc(s: ^ScreenCap, w, h, stride, y_invert: ^int) -> []u8 {
 	return p[:int(fs) * int(fh)]
 }
 
+// screen_set_region updates the capture region in global logical
+// coordinates so the view can follow a window.
+screen_set_region :: proc(s: ^ScreenCap, x, y, w, h: int) {
+	if s.handle != nil {
+		toom_screen_set_region(s.handle, c.int(x), c.int(y), c.int(w), c.int(h))
+	}
+}
+
 // screen_close stops the capture and releases every resource.
 screen_close :: proc(s: ^ScreenCap) {
 	if s.handle != nil {

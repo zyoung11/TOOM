@@ -371,7 +371,7 @@ help_draw :: proc() {
 		{"c", "toggle camera send"},
 		{"a", "toggle system audio sharing"},
 		{"s", "toggle screen sharing"},
-		{"d", "pick devices and share settings"},
+		{"d", "open the settings page"},
 		{"Up/Down", "raise or lower volume"},
 		{"", "layout"},
 		{"f", "cycle grid and focus layouts"},

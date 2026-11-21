@@ -95,6 +95,7 @@ foreign toomlibs {
 	toom_screen_open :: proc(output_index: c.int) -> rawptr ---
 	toom_screen_open_ex :: proc(name, region: cstring, cursor: c.int) -> rawptr ---
 	toom_screen_list :: proc(buf: [^]u8, cap: c.int) -> c.int ---
+	toom_screen_set_region :: proc(p: rawptr, x, y, w, h: c.int) ---
 	toom_screen_poll :: proc(p: rawptr, timeout_ms: c.int) -> c.int ---
 	toom_screen_frame :: proc(p: rawptr, w, h, stride, y_invert: ^c.int) -> [^]u8 ---
 	toom_screen_close :: proc(p: rawptr) ---

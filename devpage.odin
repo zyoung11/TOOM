@@ -8,7 +8,7 @@ import "core:unicode/utf8"
 import "core:sync"
 import ma "../Aideo/miniaudio"
 
-device_folders := [4]string{"Audio input", "Audio output", "Camera", "Share"}
+device_folders := [7]string{"Audio input", "Audio output", "Camera", "Share", "Display", "Meeting", "Windows"}
 
 // DevEnt is one entry in a device folder list.
 DevEnt :: struct {
@@ -18,10 +18,10 @@ DevEnt :: struct {
 	is_default: bool,
 }
 
-dev_lists:  [4][dynamic]DevEnt
+dev_lists:  [7][dynamic]DevEnt
 mon_list:   [dynamic]DevEnt
-dev_cur:    [4]int
-dev_sel:    [4]int
+dev_cur:    [7]int
+dev_sel:    [7]int
 dev_inited: bool
 cam_sel:    int
 
@@ -157,7 +157,8 @@ dev_init :: proc() {
 	dev_lists[2] = cam_enum_devs()
 	mon_list = audio_enum_mon()
 	dev_share_init()
-	for f in 0..<4 {
+	dev_settings_init()
+	for f in 0..<7 {
 		dev_sel[f] = 0
 		dev_cur[f] = 0
 	}
@@ -180,8 +181,7 @@ dev_share_init :: proc() {
 	for o in outs {
 		append(&dev_lists[3], DevEnt{name = strings.clone(o), path = strings.clone(o)})
 	}
-	append(&dev_lists[3], DevEnt{name = "region: full output", path = "region"})
-	append(&dev_lists[3], DevEnt{name = "cursor: show", path = "cursor"})
+	append(&dev_lists[3], DevEnt{name = strings.clone("cursor: show"), path = strings.clone("cursor")})
 }
 
 // dev_share_pick applies one pick inside the share folder.
@@ -190,14 +190,12 @@ dev_share_pick :: proc(idx: int) {
 		return
 	}
 	e := &dev_lists[3][idx]
-	if e.path == "region" {
-		share_region_pick()
-	} else if e.path == "cursor" {
+	if e.path == "cursor" {
 		sync.atomic_store(&share_cursor, 1 - sync.atomic_load(&share_cursor))
-		if share_cursor != 0 {
-			e.name = "cursor: show"
+		if sync.atomic_load(&share_cursor) != 0 {
+			dev_set_name(e, "cursor: show")
 		} else {
-			e.name = "cursor: hide"
+			dev_set_name(e, "cursor: hide")
 		}
 		share_apply()
 	} else {
@@ -207,11 +205,188 @@ dev_share_pick :: proc(idx: int) {
 	}
 }
 
+// dev_set_name replaces one entry label with a fresh clone.
+dev_set_name :: proc(e: ^DevEnt, s: string) {
+	delete(e.name)
+	e.name = strings.clone(s)
+}
+
+// dev_settings_init fills the display and meeting folders with the
+// runtime settings.
+dev_settings_init :: proc() {
+	append(&dev_lists[4], DevEnt{name = strings.clone("mirror"), path = strings.clone("mirror")})
+	append(&dev_lists[4], DevEnt{name = strings.clone("colors"), path = strings.clone("colors")})
+	append(&dev_lists[4], DevEnt{name = strings.clone("layout"), path = strings.clone("layout")})
+	append(&dev_lists[4], DevEnt{name = strings.clone("volume"), path = strings.clone("volume")})
+	append(&dev_lists[5], DevEnt{name = strings.clone("camera"), path = strings.clone("camera")})
+	append(&dev_lists[5], DevEnt{name = strings.clone("microphone"), path = strings.clone("microphone")})
+	append(&dev_lists[5], DevEnt{name = strings.clone("speaker"), path = strings.clone("speaker")})
+	append(&dev_lists[5], DevEnt{name = strings.clone("system audio"), path = strings.clone("dshare")})
+	append(&dev_lists[5], DevEnt{name = strings.clone("screen share"), path = strings.clone("screen")})
+	dev_settings_refresh()
+}
+
+// dev_settings_refresh rewrites the setting labels with the current
+// values.
+dev_settings_refresh :: proc() {
+	for i in 0..<len(dev_lists[4]) {
+		e := &dev_lists[4][i]
+		switch e.path {
+		case "mirror":
+			v := "off"
+			if sync.atomic_load(&self_mirror) != 0 {
+				v = "on"
+			}
+			dev_set_name(e, tprintf("mirror: %s", v))
+		case "colors":
+			dev_set_name(e, tprintf("colors: %d", colors_now()))
+		case "layout":
+			v := "grid"
+			if conf_mode == .Focus {
+				v = "focus"
+			}
+			dev_set_name(e, tprintf("layout: %s", v))
+		case "volume":
+			vol := transmute(f32)u32(sync.atomic_load(&spk_vol_bits))
+			dev_set_name(e, tprintf("volume: %d%%", int(vol * 100)))
+		}
+	}
+	for i in 0..<len(dev_lists[5]) {
+		e := &dev_lists[5][i]
+		switch e.path {
+		case "camera":
+			v := "off"
+			if sync.atomic_load(&send_video) != 0 {
+				v = "on"
+			}
+			dev_set_name(e, tprintf("camera: %s", v))
+		case "microphone":
+			v := "off"
+			if mic_enabled {
+				if sync.atomic_load(&mic_mute) == 0 {
+					v = "on"
+				} else {
+					v = "muted"
+				}
+			}
+			dev_set_name(e, tprintf("microphone: %s", v))
+		case "speaker":
+			v := "muted"
+			if sync.atomic_load(&spk_mute) == 0 {
+				v = "on"
+			}
+			dev_set_name(e, tprintf("speaker: %s", v))
+		case "dshare":
+			v := "off"
+			if sync.atomic_load(&desk_send) != 0 {
+				v = "on"
+			}
+			dev_set_name(e, tprintf("system audio: %s", v))
+		case "screen":
+			v := "off"
+			if sync.atomic_load(&screen_send) != 0 {
+				v = "on"
+			}
+			dev_set_name(e, tprintf("screen share: %s", v))
+		}
+	}
+}
+
+// dev_display_pick applies one display setting pick.
+dev_display_pick :: proc(idx: int) {
+	if idx < 0 || idx >= len(dev_lists[4]) {
+		return
+	}
+	switch dev_lists[4][idx].path {
+	case "mirror":
+		conf_key(Key{kind = .Char, ch = 'h'})
+	case "colors":
+		if color_idx >= len(CONF_COLORS) - 1 {
+			color_idx = 0
+			colors_apply()
+			toast_show(tprintf("colors %d", colors_now()), 0)
+		} else {
+			conf_key(Key{kind = .Char, ch = 'k'})
+		}
+	case "layout":
+		conf_key(Key{kind = .Char, ch = 'f'})
+	case "volume":
+		conf_key(Key{kind = .Up})
+	}
+	dev_settings_refresh()
+}
+
+// dev_meeting_pick applies one meeting setting pick.
+dev_meeting_pick :: proc(idx: int) {
+	if idx < 0 || idx >= len(dev_lists[5]) {
+		return
+	}
+	switch dev_lists[5][idx].path {
+	case "camera":
+		conf_key(Key{kind = .Char, ch = 'c'})
+	case "microphone":
+		conf_key(Key{kind = .Char, ch = 'n'})
+	case "speaker":
+		conf_key(Key{kind = .Char, ch = 'm'})
+	case "dshare":
+		conf_key(Key{kind = .Char, ch = 'a'})
+	case "screen":
+		conf_key(Key{kind = .Char, ch = 's'})
+	}
+	dev_settings_refresh()
+}
+
+// dev_windows_refresh rebuilds the Windows folder from the window
+// provider snapshot.
+dev_windows_refresh :: proc() {
+	for e in dev_lists[6] {
+		delete(e.name)
+		delete(e.path)
+	}
+	clear(&dev_lists[6])
+	for e in win_entries {
+		delete(e.title)
+		delete(e.app)
+		delete(e.output)
+	}
+	clear(&win_entries)
+	append(&dev_lists[6], DevEnt{name = strings.clone("whole output"), path = strings.clone("output")})
+	if !win_use() {
+		append(&dev_lists[6], DevEnt{name = strings.clone("no window source"), path = strings.clone("none")})
+		return
+	}
+	win_entries = win_list()
+	for w, i in win_entries {
+		label := w.title
+		if label == "" {
+			label = w.app
+		}
+		append(&dev_lists[6], DevEnt{name = strings.clone(tprintf("%d. %s", i + 1, label)), path = strings.clone(tprintf("%d", i + 1))})
+	}
+}
+
+// dev_windows_pick applies one window share pick.
+dev_windows_pick :: proc(idx: int) {
+	if idx < 0 || idx >= len(dev_lists[6]) {
+		return
+	}
+	dev_sel[6] = idx
+	if idx == 0 {
+		share_window = 0
+		toast_show("sharing the whole output", 1)
+	} else {
+		w := win_entries[idx - 1]
+		share_window = w.id
+		toast_show(tprintf("sharing window %s", w.title), 1)
+	}
+	share_apply()
+}
+
 // dev_dir remembers the folder column cursor across menu visits.
 dev_dir: int
 
 // dev_off remembers the scroll position of every folder list.
-dev_off: [4]int
+dev_off: [7]int
 
 // scroll_offset keeps the cursor visible with the smallest move.
 scroll_offset :: proc(offset, cursor, list_h: int) -> int {
@@ -268,6 +443,7 @@ dev_move :: proc(folder: ^int, inside: bool, delta: int) {
 // Enter or Space marks the chosen device and the menu stays open.
 dev_run :: proc() {
 	dev_init()
+	dev_windows_refresh()
 	folder := dev_dir
 	inside := false
 	need_draw := true
@@ -287,7 +463,7 @@ dev_run :: proc() {
 			fb_at(&b, 1, max((cols - 7) / 2, 1))
 			fb_str(&b, "\x1b[1m")
 			fb_fg(&b, C_BLUE)
-			fb_str(&b, "Devices")
+			fb_str(&b, "Settings")
 			fb_reset(&b)
 			list_h := rows - 4
 
@@ -411,6 +587,12 @@ dev_run :: proc() {
 		if pick {
 			if folder == 3 {
 				dev_share_pick(dev_cur[3])
+			} else if folder == 6 {
+				dev_windows_pick(dev_cur[6])
+			} else if folder == 4 {
+				dev_display_pick(dev_cur[4])
+			} else if folder == 5 {
+				dev_meeting_pick(dev_cur[5])
 			} else {
 				dev_sel[folder] = dev_cur[folder]
 				if folder == 2 && dev_cur[2] < len(dev_lists[2]) {

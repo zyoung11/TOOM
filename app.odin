@@ -88,8 +88,9 @@ self_screen_tile:   Tile
 self_screen_w:      int
 self_screen_h:      int
 share_output:       string
-share_region:       string
 share_cursor:       i32 = 1
+share_window:       u64
+win_lost:           i32
 mir_y:       []u8
 mir_u:       []u8
 mir_v:       []u8
@@ -807,49 +808,6 @@ screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
 	engine_push(p.screen_engine, f)
 }
 
-// slurp_pick runs slurp and returns the picked rectangle text.
-slurp_pick :: proc() -> string {
-	mode: [2]u8
-	mode[0] = 'r'
-	cmd: [8]u8
-	f := clip_popen(to_cstr("slurp", cmd[:]), cast(cstring)&mode[0])
-	if f == nil {
-		return ""
-	}
-	buf: [128]u8
-	res := ""
-	if clip_fgets(raw_data(buf[:]), c.int(len(buf)), f) != nil {
-		n := 0
-		for n < len(buf) && buf[n] != 0 && buf[n] != '\n' {
-			n += 1
-		}
-		res = strings.clone(string(buf[:n]))
-	}
-	_ = clip_pclose(f)
-	return res
-}
-
-// share_region_pick runs slurp and stores the picked region.
-share_region_pick :: proc() {
-	region := slurp_pick()
-	if region == "" {
-		toast_show("region selection cancelled", 0)
-		return
-	}
-	if share_region != "" {
-		delete(share_region)
-	}
-	share_region = region
-	for i in 0..<len(dev_lists[3]) {
-		e := &dev_lists[3][i]
-		if e.path == "region" {
-			e.name = strings.clone(tprintf("region: %s", region))
-		}
-	}
-	toast_show(tprintf("share region %s", region), 1)
-	share_apply()
-}
-
 // share_apply restarts screen sharing so new settings take effect.
 share_apply :: proc() {
 	if sync.atomic_load(&screen_send) == 0 {
@@ -866,12 +824,26 @@ share_apply :: proc() {
 }
 
 // screen_pipeline_start opens the screen capture so the meeting can
-// send the desktop picture.
+// send the desktop picture or one application window.
 screen_pipeline_start :: proc() -> bool {
 	if sync.atomic_load(&screen_ready) != 0 {
 		return true
 	}
-	if !screen_open_ex(&screen_cap, share_output, share_region, sync.atomic_load(&share_cursor) != 0) {
+	if share_window != 0 {
+		w, shown, alive := win_track(share_window)
+		if !alive || !win_use() {
+			return false
+		}
+		if !screen_open_ex(&screen_cap, w.output, "", sync.atomic_load(&share_cursor) != 0) {
+			return false
+		}
+		if shown {
+			screen_set_region(&screen_cap, w.rect.x, w.rect.y, w.rect.w, w.rect.h)
+		}
+		sync.atomic_store(&screen_ready, 1)
+		return true
+	}
+	if !screen_open_ex(&screen_cap, share_output, "", sync.atomic_load(&share_cursor) != 0) {
 		return false
 	}
 	sync.atomic_store(&screen_ready, 1)
@@ -928,6 +900,17 @@ screen_tx_thread :: proc() {
 		time.sleep(5 * time.Millisecond)
 		if sync.atomic_load(&screen_ready) == 0 || sync.atomic_load(&screen_send) == 0 {
 			continue
+		}
+		if share_window != 0 {
+			w, shown, alive := win_track(share_window)
+			if !alive {
+				sync.atomic_store(&win_lost, 1)
+				screen_stop()
+				continue
+			}
+			if shown {
+				screen_set_region(&screen_cap, w.rect.x, w.rect.y, w.rect.w, w.rect.h)
+			}
 		}
 		r := screen_poll(&screen_cap, 100)
 		if r < 0 {
@@ -1423,6 +1406,10 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 				sync.atomic_store(&layout_dirty, 1)
 			}
 		}
+		if sync.atomic_load(&win_lost) != 0 {
+			sync.atomic_store(&win_lost, 0)
+			toast_show("window closed, sharing stopped", 2)
+		}
 		if sync.atomic_load(&layout_dirty) != 0 {
 			layout_apply()
 		}
@@ -1454,6 +1441,8 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	desk_ring.data = nil
 	screen_stop()
 	screen_owner = 0
+	share_window = 0
+	win_stop()
 	sync.mutex_lock(&peer_mu)
 	ids := make([dynamic]u32, 0, len(peers))
 	for id in peers {
