@@ -200,8 +200,9 @@ footer_draw :: proc(b: ^FB, backend: string) {
 	append(&keys, Piece{l = "n", r = "mic", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 3})
 	append(&keys, Piece{l = "c", r = "cam", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 4})
 	append(&keys, Piece{l = "f", r = "layout", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 5})
-	append(&keys, Piece{l = "j/k", r = "colors", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
-	append(&keys, Piece{l = "Tab ←/→", r = "pick", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
+	append(&keys, Piece{l = "h", r = "mirror", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
+	append(&keys, Piece{l = "j/k", r = "colors", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
+	append(&keys, Piece{l = "Tab ←/→", r = "pick", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 8})
 	append(&keys, Piece{l = "?", r = "help", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 0})
 	row_draw(b, rows, keys[:], cols)
 }
@@ -304,7 +305,7 @@ help_draw :: proc() {
 	b: FB
 	fb_begin(&b)
 	cols, rows := term_size()
-	lines := [13][2]string{
+	lines := [14][2]string{
 		{"", "media"},
 		{"m", "toggle speaker mute"},
 		{"n", "toggle microphone mute"},
@@ -312,6 +313,7 @@ help_draw :: proc() {
 		{"Up/Down", "raise or lower volume"},
 		{"", "layout"},
 		{"f", "cycle grid and focus layouts"},
+		{"h", "toggle mirrored self view"},
 		{"Tab ←/→", "pick the focused member"},
 		{"", "other"},
 		{"j/k", "decrease or increase color count"},

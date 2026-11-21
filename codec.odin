@@ -166,6 +166,34 @@ dec_close :: proc(d: ^Dec) {
 	d^ = {}
 }
 
+// yuv_flip_h mirrors one YUV420P frame horizontally into the dst
+// planes and returns the flipped frame.
+yuv_flip_h :: proc(f: YuvFrame, dst_y, dst_u, dst_v: []u8) -> YuvFrame {
+	w := f.w
+	h := f.h
+	for row in 0..<h {
+		src := int(f.sy) * row
+		dst := w * row
+		for x in 0..<w {
+			dst_y[dst + x] = f.y[src + w - 1 - x]
+		}
+	}
+	hw := w / 2
+	hh := h / 2
+	for row in 0..<hh {
+		src := int(f.sc) * row
+		dst := hw * row
+		for x in 0..<hw {
+			dst_u[dst + x] = f.u[src + hw - 1 - x]
+			dst_v[dst + x] = f.v[src + hw - 1 - x]
+		}
+	}
+	return YuvFrame{
+		y = raw_data(dst_y), u = raw_data(dst_u), v = raw_data(dst_v),
+		sy = c.int(w), sc = c.int(hw), w = w, h = h,
+	}
+}
+
 // yuyv_to_i420 converts one packed YUYV frame into I420 planes with
 // 2x2 chroma subsampling.
 yuyv_to_i420 :: proc(src: []u8, w, h: int, y, u, v: []u8) {

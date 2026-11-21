@@ -51,6 +51,10 @@ cam_ready:   i32
 mic_enabled: bool
 send_video:  i32
 cam_off:     i32
+self_mirror: i32 = 1
+mir_y:       []u8
+mir_u:       []u8
+mir_v:       []u8
 enc_out:     []u8
 ybuf:        []u8
 ubuf:        []u8
@@ -306,6 +310,9 @@ cam_pipeline_start :: proc() -> bool {
 	ybuf = make([]u8, self_w * self_h)
 	ubuf = make([]u8, self_w * self_h / 4)
 	vbuf = make([]u8, self_w * self_h / 4)
+	mir_y = make([]u8, self_w * self_h)
+	mir_u = make([]u8, self_w * self_h / 4)
+	mir_v = make([]u8, self_w * self_h / 4)
 	enc_out = make([]u8, 1 << 20)
 	if cam.fmt == CAM_MJPG {
 		_ = dec_open(&local_dec, "mjpeg")
@@ -351,7 +358,11 @@ capture_thread :: proc() {
 			}
 		}
 		if f.w > 0 && sync.atomic_load(&cam_off) == 0 {
-			engine_push(self_engine, f)
+			if sync.atomic_load(&self_mirror) != 0 {
+				engine_push(self_engine, yuv_flip_h(f, mir_y, mir_u, mir_v))
+			} else {
+				engine_push(self_engine, f)
+			}
 		}
 		if f.w > 0 {
 			if sync.atomic_load(&send_video) != 0 {
@@ -600,6 +611,8 @@ conf_key :: proc(k: Key) -> bool {
 				conf_mode = .Grid
 			}
 			layout_apply()
+		case 'h', 'H':
+			sync.atomic_store(&self_mirror, 1 - sync.atomic_load(&self_mirror))
 		case 'j', 'J':
 			if color_idx > 0 {
 				color_idx -= 1
@@ -766,10 +779,16 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	delete(ubuf)
 	delete(vbuf)
 	delete(enc_out)
+	delete(mir_y)
+	delete(mir_u)
+	delete(mir_v)
 	ybuf = nil
 	ubuf = nil
 	vbuf = nil
 	enc_out = nil
+	mir_y = nil
+	mir_u = nil
+	mir_v = nil
 	sync.atomic_store(&app_stop, 0)
 	return ""
 }
