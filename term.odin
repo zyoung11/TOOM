@@ -99,6 +99,33 @@ term_enter_raw :: proc() {
 	term_raw = true
 }
 
+term_full: bool
+
+// term_enter_full enters raw mode, switches to the alternate screen
+// and hides the cursor so the program owns the whole terminal.
+term_enter_full :: proc() {
+	term_enter_raw()
+	seq: string = "\x1b[?1049h\x1b[?25l"
+	os.write(os.stdout, transmute([]u8)seq)
+	term_full = true
+}
+
+// term_leave_full restores the cursor and the main screen.
+term_leave_full :: proc() {
+	if term_full {
+		seq: string = "\x1b[?25h\x1b[?1049l"
+		os.write(os.stdout, transmute([]u8)seq)
+		term_full = false
+	}
+	term_leave_raw()
+}
+
+// screen_clear wipes the whole visible screen.
+screen_clear :: proc() {
+	seq: string = "\x1b[2J\x1b[3J\x1b[H"
+	os.write(os.stdout, transmute([]u8)seq)
+}
+
 term_leave_raw :: proc() {
 	if term_raw {
 		tcsetattr(0, TCSANOW, &term_orig)
@@ -128,9 +155,6 @@ input_thread :: proc() {
 	for {
 		pfd := posix.pollfd{fd = 0, events = {.IN}}
 		if posix.poll(&pfd, 1, 200) <= 0 {
-			if sync.atomic_load(&app_stop) != 0 {
-				return
-			}
 			continue
 		}
 		n, err := os.read(os.stdin, buf[:])
@@ -187,6 +211,9 @@ KeyKind :: enum {
 	Right,
 	Enter,
 	Backspace,
+	Delete,
+	Home,
+	End,
 	Tab,
 	FocusIn,
 }
@@ -237,7 +264,21 @@ key_next :: proc() -> Key {
 				if input_wait(20) {
 					_, _ = input_pop()
 				}
-				return {kind = .Backspace}
+				return {kind = .Delete}
+			case 'H':
+				return {kind = .Home}
+			case 'F':
+				return {kind = .End}
+			case '1':
+				if input_wait(20) {
+					_, _ = input_pop()
+				}
+				return {kind = .Home}
+			case '4':
+				if input_wait(20) {
+					_, _ = input_pop()
+				}
+				return {kind = .End}
 			}
 			return {kind = .None}
 		}
@@ -319,7 +360,7 @@ char_width :: proc(r: rune) -> int {
 		(r >= 0x20000 && r <= 0x3fffd) {
 		return 2
 	}
-	return 0
+	return 1
 }
 
 sgr_color :: proc(buf: []u8, base: int, rgb: int) -> int {

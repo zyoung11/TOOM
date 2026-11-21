@@ -15,19 +15,19 @@ podman network rm -f toomnet >/dev/null 2>&1 || true
 podman network create toomnet >/dev/null
 podman rm -f toom-srv sim-a sim-b sim-c >/dev/null 2>&1 || true
 
-podman run -d --name toom-srv --network toomnet toom-net-test /toom-server -port 4399 >/dev/null
+podman run -d --name toom-srv --network toomnet toom-net-test /toom-server run --config /config.json >/dev/null
 sleep 1
 
 podman run --name sim-a --network toomnet toom-net-test /toomsim \
-	-server toom-srv:4399 -room demo -secret s3cret -name alice -frames 30 -peers 2 \
+	-server toom-srv:4400 -room demo -secret s3cret -name alice -frames 30 -peers 2 \
 	>test/bin/sim-a.log 2>&1 &
 pa=$!
 podman run --name sim-b --network toomnet toom-net-test /toomsim \
-	-server toom-srv:4399 -room demo -secret s3cret -name bob -frames 30 -peers 2 \
+	-server toom-srv:4400 -room demo -secret s3cret -name bob -frames 30 -peers 2 \
 	>test/bin/sim-b.log 2>&1 &
 pb=$!
 podman run --name sim-c --network toomnet toom-net-test /toomsim \
-	-server toom-srv:4399 -room demo -secret s3cret -name carol -frames 30 -peers 2 \
+	-server toom-srv:4400 -room demo -secret s3cret -name carol -frames 30 -peers 2 \
 	>test/bin/sim-c.log 2>&1 &
 pc=$!
 

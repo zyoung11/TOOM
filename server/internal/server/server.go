@@ -166,9 +166,12 @@ func (s *Server) handleCreateRoom(body []byte, from netip.AddrPort) {
 	case !validName(req.Name) || len(req.JoinKey) != 32:
 		rpy.Result = protocol.ResultRejected
 		rpy.Error = "bad room name or join key"
-	case ok && !bytes.Equal(existing.JoinKey, req.JoinKey):
+	case ok && !bytes.Equal(existing.JoinKey, req.JoinKey) && len(existing.Members) > 0:
 		rpy.Result = protocol.ResultRejected
 		rpy.Error = "room exists with another key"
+	case ok && !bytes.Equal(existing.JoinKey, req.JoinKey):
+		s.rooms[req.Name] = newRoom(req.Name, req.JoinKey, time.Now())
+		logx.Info("room recreated: " + req.Name)
 	case !ok && len(s.rooms) >= maxRooms:
 		rpy.Result = protocol.ResultRejected
 		rpy.Error = "too many rooms"
@@ -293,9 +296,21 @@ func (s *Server) handleBye(from netip.AddrPort) {
 	if !ok {
 		return
 	}
-	_, _ = m.room.drop(from)
-	logx.Info("bye room " + m.room.Name + ": " + m.Name)
-	s.broadcast(m.room, protocol.TypeMemberLeave, protocol.MemberLeave{ID: m.ID}, from)
+	r := m.room
+	_, _ = s.dropMember(r, from)
+	logx.Info("bye room " + r.Name + ": " + m.Name)
+	s.broadcast(r, protocol.TypeMemberLeave, protocol.MemberLeave{ID: m.ID}, from)
+}
+
+// dropMember removes one member and deletes the room the moment it
+// turns empty, so an unused room never blocks a fresh create.
+func (s *Server) dropMember(r *Room, addr netip.AddrPort) (*Member, bool) {
+	m, ok := r.drop(addr)
+	if ok && len(r.Members) == 0 {
+		delete(s.rooms, r.Name)
+		logx.Info("room closed: " + r.Name)
+	}
+	return m, ok
 }
 
 // forward sends one media datagram to every subscriber of the sender.
@@ -324,7 +339,7 @@ func (s *Server) sweep() {
 	for _, r := range s.rooms {
 		for _, m := range r.Members {
 			if now.Sub(m.LastSeen) > memberTimeout {
-				_, _ = r.drop(m.Addr)
+				_, _ = s.dropMember(r, m.Addr)
 				logx.Info("timeout room " + r.Name + ": " + m.Name)
 				s.broadcast(r, protocol.TypeMemberLeave, protocol.MemberLeave{ID: m.ID}, m.Addr)
 			}

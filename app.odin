@@ -1,5 +1,6 @@
 package toom
 
+import "base:runtime"
 import "core:c"
 import "core:os"
 import aideo "../Aideo"
@@ -8,6 +9,9 @@ import "core:sync"
 import "core:time"
 
 app_stop: i32
+
+tx_audio_n: u32
+rx_audio_n: u32
 
 app_fps:      int
 enc_kbps:     int
@@ -46,6 +50,7 @@ self_h:      int
 cam_enabled: bool
 mic_enabled: bool
 send_video:  i32
+cam_off:     i32
 enc_out:     []u8
 ybuf:        []u8
 ubuf:        []u8
@@ -111,27 +116,38 @@ layout_apply :: proc() {
 }
 
 // status_draw paints the bottom status line.
+// level_bar renders one audio level as a 4 step bar.
+level_bar :: proc(v: int) -> string {
+	steps := v * 4 / 32767
+	if steps > 4 {
+		steps = 4
+	}
+	chars := [5]string{"    ", "▁   ", "▃▂  ", "▅▄▂ ", "█▇▆▃"}
+	return chars[steps]
+}
+
 status_draw :: proc(backend: string) {
-	_, rows := term_size()
+	cols, rows := term_size()
 	sync.mutex_lock(&peer_mu)
 	n := len(peers)
 	sync.mutex_unlock(&peer_mu)
-	cam_s := "关"
+	cam_s := "off"
 	if cam_enabled && sync.atomic_load(&send_video) != 0 {
-		cam_s = "开"
+		cam_s = "on"
 	}
-	mic_s := "关"
+	mic_s := "off"
 	if mic_enabled {
-		mic_s = "开"
+		mic_s = "on"
 	}
-	spk_s := "开"
+	spk_s := "on"
 	if sync.atomic_load(&spk_mute) != 0 {
-		spk_s = "静音"
+		spk_s = "muted"
 	}
-	line := tprintf("房间 %s  人数 %d  摄像头 %s  麦克风 %s  声音 %s  编码 %s  q 退出  m 声音  n 麦克风  c 摄像头  ↑↓ 音量",
-		sess.room, n + 1, cam_s, mic_s, spk_s, backend)
-	put_fill(rows, 1, 500, C_FIELD)
-	put_text(rows, 1, line, C_TEXT, C_FIELD, false)
+	line := tprintf("Room %s   Members %d   Camera %s   Mic %s %s   Audio %s %s   pkt tx %d rx %d   Encoder %s   q quit   m mute   n mic   c cam   Up/Down volume",
+		sess.room, n + 1, cam_s, mic_s, level_bar(int(sync.atomic_load(&cap_level))), spk_s,
+		level_bar(int(sync.atomic_load(&rx_level))), sync.atomic_load(&tx_audio_n), sync.atomic_load(&rx_audio_n), backend)
+	put_fill(rows, 1, cols, -1)
+	put_text(rows, 1, line, C_TEXT, -1, false)
 }
 
 // label_draw paints each tile caption over the picture bottom rows.
@@ -144,15 +160,15 @@ label_draw :: proc() {
 			return
 		}
 		width_cells := (t.w + cw - 1) / cw
-		put_fill(label_row, t.col, width_cells, C_FIELD)
+		put_fill(label_row, t.col, width_cells, -1)
 		mark := ""
 		if muted {
-			mark = " [静音]"
+			mark = " [muted]"
 		}
-		put_text(label_row, t.col + 1, tprintf("%s%s", name, mark), C_TEXT, C_FIELD, true)
+		put_text(label_row, t.col + 1, tprintf("%s%s", name, mark), C_TEXT, -1, true)
 	}
 	_ = cols
-	draw_one(self_tile, tprintf("%s (我)", sess.name), sync.atomic_load(&mic_mute) != 0, cw, ch)
+	draw_one(self_tile, tprintf("%s (me)", sess.name), sync.atomic_load(&mic_mute) != 0, cw, ch)
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
 		if p.has_tile {
@@ -257,8 +273,10 @@ capture_thread :: proc() {
 				sy = c.int(cam.w), sc = c.int(cam.w / 2), w = cam.w, h = cam.h,
 			}
 		}
-		if f.w > 0 {
+		if f.w > 0 && sync.atomic_load(&cam_off) == 0 {
 			engine_push(self_engine, f)
+		}
+		if f.w > 0 {
 			if sync.atomic_load(&send_video) != 0 {
 				n, key := h264_enc_encode(&enc, f, enc_out)
 				if n > 0 {
@@ -285,6 +303,17 @@ audio_tx_thread :: proc() {
 			continue
 		}
 		audio_capture_pop(pcm[:])
+		peak := 0
+		for i in 0..<AUDIO_BLOCK {
+			v := int(pcm[i])
+			if v < 0 {
+				v = -v
+			}
+			if v > peak {
+				peak = v
+			}
+		}
+		level_store(&mic_level, peak)
 		if sync.atomic_load(&mic_mute) != 0 {
 			for i in 0..<AUDIO_BLOCK {
 				pcm[i] = 0
@@ -294,6 +323,7 @@ audio_tx_thread :: proc() {
 		if n > 0 {
 			seq += 1
 			sess_send_frame(&sess, MEDIA_STREAM_AUDIO, 0, seq, ms_now(), out[:n])
+			sync.atomic_store(&tx_audio_n, sync.atomic_load(&tx_audio_n) + 1)
 		}
 	}
 }
@@ -336,6 +366,17 @@ mix_thread :: proc() {
 				mix[i] = -32768
 			}
 		}
+		peak := 0
+		for i in 0..<len(mix) {
+			v := int(mix[i])
+			if v < 0 {
+				v = -v
+			}
+			if v > peak {
+				peak = v
+			}
+		}
+		level_store(&rx_level, peak)
 		audio_play_push(mix)
 	}
 }
@@ -403,6 +444,7 @@ route_media :: proc(blob: []u8) {
 				video_frame(p, f)
 			}
 		} else {
+			sync.atomic_store(&rx_audio_n, sync.atomic_load(&rx_audio_n) + 1)
 			audio_block(p, frame)
 		}
 	}
@@ -420,27 +462,17 @@ epoch: time.Time
 conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_on: bool) -> string {
 	fd := net_open()
 	if fd < 0 {
-		return "socket 创建失败"
+		return "Socket create failed"
 	}
 	defer sock_close(c.int(fd))
 
-	colon := -1
-	for i in 0..<len(server) {
-		if server[i] == ':' {
-			colon = i
-			break
-		}
-	}
-	if colon < 1 {
-		return "服务器地址格式应为 host:port"
-	}
-	port_val, ok := parse_port(server[colon + 1:])
+	host, port_val, ok := parse_hostport(server)
 	if !ok {
-		return "端口无效"
+		return "Server address must be host:port"
 	}
-	srv := net_addr(server[:colon], u16(port_val))
-	if srv.addr == 0xFFFFFFFF {
-		return "服务器地址无效"
+	srv, sok := net_addr(host, u16(port_val))
+	if !sok {
+		return "Invalid server address"
 	}
 
 	sess_init(&sess, fd, srv, room, name, bytes_of(secret))
@@ -494,6 +526,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	}
 	sess_update(&sess, sync.atomic_load(&send_video) != 0, mic_enabled)
 
+	screen_clear()
 	self_engine = engine_new(self_w, self_h, Tile{row = 1, col = 1, w = 64, h = 48})
 	layout_apply()
 
@@ -514,6 +547,8 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	}
 	last_ui: time.Time
 	for sync.atomic_load(&app_stop) == 0 {
+		tmp := runtime.default_temp_allocator_temp_begin()
+		defer runtime.default_temp_allocator_temp_end(tmp)
 		k := key_next()
 		#partial switch k.kind {
 		case .Quit:
@@ -524,6 +559,8 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 			audio_vol_add(-0.1)
 		case .Char:
 			switch k.ch {
+			case 'q', 'Q':
+				sync.atomic_store(&app_stop, 1)
 			case 'm', 'M':
 				audio_toggle_spk()
 			case 'n', 'N':
@@ -531,8 +568,13 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 				sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
 			case 'c', 'C':
 				if cam_enabled {
-					sync.atomic_store(&send_video, sync.atomic_load(&send_video) == 0 ? 1 : 0)
-					sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+					off := 1 - sync.atomic_load(&cam_off)
+					sync.atomic_store(&cam_off, off)
+					sync.atomic_store(&send_video, 1 - off)
+					if off == 1 {
+						aideo.aideo_clear(self_engine)
+					}
+					sess_update(&sess, off == 0, sync.atomic_load(&mic_mute) == 0)
 				}
 			}
 		}

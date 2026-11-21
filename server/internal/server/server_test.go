@@ -253,3 +253,49 @@ func TestRoomCapacity(t *testing.T) {
 		t.Fatal("overfull room accepted a join")
 	}
 }
+
+func TestRoomEmptyLifecycle(t *testing.T) {
+	s := startServer(t)
+	key1 := protocol.DeriveJoinKey([]byte("secret-one"))
+	key2 := protocol.DeriveJoinKey([]byte("secret-two"))
+	key3 := protocol.DeriveJoinKey([]byte("secret-three"))
+
+	a := newClient(t, s)
+	if !a.createRoom("demo", key1) {
+		t.Fatal("first create failed")
+	}
+
+	// An empty room must not block a fresh create with another key.
+	b := newClient(t, s)
+	if !b.createRoom("demo", key2) {
+		t.Fatal("create over empty room rejected")
+	}
+
+	// With members inside, another key must be rejected.
+	ida := a.join("demo", "alice", key2)
+	idb := b.join("demo", "bob", key2)
+	if ida == 0 || idb == 0 {
+		t.Fatal("join with recreated key failed")
+	}
+	c := newClient(t, s)
+	if c.createRoom("demo", key3) {
+		t.Fatal("create over occupied room must be rejected")
+	}
+
+	// Once everybody left the room must be gone.
+	a.send(protocol.TypeBye, struct{}{})
+	b.send(protocol.TypeBye, struct{}{})
+	d := newClient(t, s)
+	d.send(protocol.TypeJoinRequest, protocol.JoinRequest{Room: "demo", Name: "late"})
+	typ, body := d.recvOne(time.Second)
+	if typ != protocol.TypeJoinReply {
+		t.Fatalf("closed room answered type %02x, want join reply", typ)
+	}
+	var rpy protocol.JoinReply
+	if err := protocol.DecodeJSON(body, &rpy); err != nil {
+		t.Fatalf("bad reply: %v", err)
+	}
+	if rpy.Result != protocol.ResultRejected {
+		t.Fatal("closed room accepted a join")
+	}
+}

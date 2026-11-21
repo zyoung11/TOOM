@@ -1,5 +1,6 @@
 package toom
 
+import "core:c"
 import "core:sync"
 import ma "../Aideo/miniaudio"
 
@@ -13,11 +14,42 @@ cap_mu:   sync.Mutex
 pb_mu:    sync.Mutex
 cap_dev:  ma.device
 pb_dev:   ma.device
+audio_ctx: ma.context_type
 audio_ok: bool
 spk_mute: i32
 mic_mute: i32
 spk_vol_bits: u32
 pb_primed:    i32
+mic_level:    u32
+cap_level:    u32
+rx_level:     u32
+
+// pulse_default_id fills a device id with the Pulse special default
+// name. Passing no device id makes the Pulse layer fall back to the
+// default sink monitor instead of the default source.
+pulse_default_id :: proc(id: ^ma.device_id, capture: bool) {
+	name := "@DEFAULT_SINK@"
+	if capture {
+		name = "@DEFAULT_SOURCE@"
+	}
+	for i in 0..<len(name) {
+		id.pulse[i] = c.char(name[i])
+	}
+	id.pulse[len(name)] = 0
+}
+
+// level_store updates a peak level with decay so the bar settles back.
+level_store :: proc "contextless" (slot: ^u32, peak: int) {
+	old := int(sync.atomic_load(slot))
+	v := peak
+	if old > v {
+		v = old * 7 / 8
+	}
+	if v > 32767 {
+		v = 32767
+	}
+	sync.atomic_store(slot, u32(v))
+}
 
 // RingBuf is a single producer single consumer PCM ring.
 RingBuf :: struct {
@@ -75,6 +107,17 @@ cap_cb :: proc "c" (_: ^ma.device, _out: rawptr, input: rawptr, frames: u32) {
 	}
 	src := ([^]i16)(input)
 	n := int(frames)
+	peak := 0
+	for i in 0..<n {
+		v := int(src[i])
+		if v < 0 {
+			v = -v
+		}
+		if v > peak {
+			peak = v
+		}
+	}
+	level_store(&cap_level, peak)
 	sync.mutex_lock(&cap_mu)
 	ring_write(&cap_ring, src[:n])
 	sync.mutex_unlock(&cap_mu)
@@ -126,13 +169,27 @@ audio_start :: proc() -> bool {
 	ring_init(&pb_ring, AUDIO_RATE * 2)
 	sync.atomic_store(&spk_vol_bits, transmute(u32)f32(1.0))
 
+	ctx_config := ma.context_config_init()
+	if ma.context_init(nil, 0, &ctx_config, &audio_ctx) != .SUCCESS {
+		return false
+	}
+
+	sel_cap: ma.device_id
+	sel_pb: ma.device_id
 	ccfg := ma.device_config_init(.capture)
+	if dev_inited && dev_sel[0] > 0 && dev_sel[0] < len(dev_lists[0]) {
+		ccfg.capture.pDeviceID = &dev_lists[0][dev_sel[0]].id
+	} else if audio_ctx.backend == .pulseaudio {
+		pulse_default_id(&sel_cap, true)
+		ccfg.capture.pDeviceID = &sel_cap
+	}
 	ccfg.capture.format = .s16
 	ccfg.capture.channels = 1
 	ccfg.sampleRate = AUDIO_RATE
 	ccfg.periodSizeInMilliseconds = 20
 	ccfg.dataCallback = cap_cb
-	if ma.device_init(nil, &ccfg, &cap_dev) != .SUCCESS {
+	if ma.device_init(&audio_ctx, &ccfg, &cap_dev) != .SUCCESS {
+		ma.context_uninit(&audio_ctx)
 		return false
 	}
 	if ma.device_start(&cap_dev) != .SUCCESS {
@@ -141,18 +198,26 @@ audio_start :: proc() -> bool {
 	}
 
 	pcfg := ma.device_config_init(.playback)
+	if dev_inited && dev_sel[1] > 0 && dev_sel[1] < len(dev_lists[1]) {
+		pcfg.playback.pDeviceID = &dev_lists[1][dev_sel[1]].id
+	} else if audio_ctx.backend == .pulseaudio {
+		pulse_default_id(&sel_pb, false)
+		pcfg.playback.pDeviceID = &sel_pb
+	}
 	pcfg.playback.format = .s16
 	pcfg.playback.channels = 1
 	pcfg.sampleRate = AUDIO_RATE
 	pcfg.periodSizeInMilliseconds = 20
 	pcfg.dataCallback = pb_cb
-	if ma.device_init(nil, &pcfg, &pb_dev) != .SUCCESS {
+	if ma.device_init(&audio_ctx, &pcfg, &pb_dev) != .SUCCESS {
 		ma.device_uninit(&cap_dev)
+		ma.context_uninit(&audio_ctx)
 		return false
 	}
 	if ma.device_start(&pb_dev) != .SUCCESS {
 		ma.device_uninit(&pb_dev)
 		ma.device_uninit(&cap_dev)
+		ma.context_uninit(&audio_ctx)
 		return false
 	}
 	audio_ok = true
@@ -165,6 +230,7 @@ audio_stop :: proc() {
 	}
 	ma.device_uninit(&pb_dev)
 	ma.device_uninit(&cap_dev)
+	ma.context_uninit(&audio_ctx)
 	audio_ok = false
 }
 

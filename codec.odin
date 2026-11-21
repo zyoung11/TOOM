@@ -165,16 +165,21 @@ dec_close :: proc(d: ^Dec) {
 	delete(d.v)
 }
 
-// yuyv_to_i420 converts one packed YUYV frame into I420 planes.
+// yuyv_to_i420 converts one packed YUYV frame into I420 planes with
+// 2x2 chroma subsampling.
 yuyv_to_i420 :: proc(src: []u8, w, h: int, y, u, v: []u8) {
+	hw := w / 2
 	for row in 0..<h {
 		line := row * w * 2
 		yo := row * w
-		for x in 0..<w / 2 {
+		uo := (row / 2) * hw
+		for x in 0..<hw {
 			y[yo + x * 2] = src[line + x * 4]
 			y[yo + x * 2 + 1] = src[line + x * 4 + 2]
-			u[row * (w / 2) + x] = src[line + x * 4 + 1]
-			v[row * (w / 2) + x] = src[line + x * 4 + 3]
+			if row & 1 == 0 {
+				u[uo + x] = src[line + x * 4 + 1]
+				v[uo + x] = src[line + x * 4 + 3]
+			}
 		}
 	}
 }

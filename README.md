@@ -20,16 +20,30 @@ cd server && go build -ldflags="-s -w" -o toom-server ./cmd/toom-server
 
 ## 运行
 
-服务端：
+服务端配置 `config.json`，放在二进制同目录或用 `--config` 指定。文件缺失时 `run` 与 `install` 自动写入默认值：
+
+```json
+{
+  "port": 4400
+}
+```
+
+服务端命令：
 
 ```bash
-./server/toom-server -port 4399
+./server/toom-server run --config config.json    # 前台运行
+./server/toom-server run --config config.json --log   # 同时写日志文件
+sudo ./server/toom-server install --config config.json   # 安装 systemd 服务并开机自启
+sudo ./server/toom-server uninstall                      # 停止并移除服务
 ```
 
 客户端两步走：
 
 1. 一方在 TUI 里选「创建房间」，输入服务器地址与房间名，拿到会议码。
-2. 另一方填名称与会议码，选「加入会议」。
+2. 出码页按 Enter 会把会议码复制进剪贴板并入会，支持 wl-copy、xclip、xsel、pbcopy。
+3. 另一方填名称与会议码，选「加入会议」。
+
+加入与创建页都能选摄像头、麦克风与音频设备，回车打开设备列表，单选即时生效。
 
 | 选项 | 功能 |
 | --- | --- |
@@ -81,9 +95,11 @@ cd server && go test -race ./...        # 协议与转发
 sh server/test/podman.sh                # podman 组网，3 客户端互流
 ```
 
+帮助页：`./toom-server --help` 为命令总览，`./toom-server run --help` 等为子命令页。
+
 ## 限制
 
 - 局域网 IPv4 直连，不做 NAT 穿透。
 - 不做回声消除，建议戴耳机。
 - x264 为 GPL，二进制按 GPL 发布。
-- 会议码是入会凭证，泄露即可入会，房间空置 30 分钟回收。
+- 会议码是入会凭证，泄露即可入会。房间无人即关闭，同名可重建；从未入会的房间 30 分钟回收。

@@ -1,6 +1,7 @@
 package toom
 
 import "core:c"
+import "core:fmt"
 import "core:sync"
 
 AF_INET      :: 2
@@ -26,6 +27,18 @@ Timeval :: struct {
 	usec: i64,
 }
 
+AddrInfo :: struct {
+	flags:    c.int,
+	family:   c.int,
+	socktype: c.int,
+	protocol: c.int,
+	addrlen:  u32,
+	pad0:     u32,
+	addr:     ^SockAddr,
+	canon:    cstring,
+	next:     ^AddrInfo,
+}
+
 foreign import netlib {
 	"system:libc.so.6",
 }
@@ -47,6 +60,10 @@ foreign netlib {
 	sock_htons :: proc(v: u16) -> u16 ---
 	@(link_name="inet_addr")
 	sock_inet_addr :: proc(s: cstring) -> u32 ---
+	@(link_name="getaddrinfo")
+	sock_getaddrinfo :: proc(node, service: cstring, hints: ^AddrInfo, res: ^^AddrInfo) -> c.int ---
+	@(link_name="freeaddrinfo")
+	sock_freeaddrinfo :: proc(res: ^AddrInfo) ---
 }
 
 net_open :: proc() -> int {
@@ -71,16 +88,29 @@ net_bind :: proc(fd: int, port: u16) -> bool {
 	return sock_bind(c.int(fd), &addr, u32(size_of(SockAddr))) == 0
 }
 
-net_addr :: proc(ip: string, port: u16) -> SockAddr {
+// net_addr resolves a host name or dotted IPv4 address and builds a
+// peer address. The flag reports a successful resolution.
+net_addr :: proc(host: string, port: u16) -> (SockAddr, bool) {
 	buf: [256]u8
-	addr: SockAddr
-	n := min(len(ip), len(buf) - 1)
-	copy(buf[:], ip[:n])
+	n := min(len(host), len(buf) - 1)
+	copy(buf[:], host[:n])
 	buf[n] = 0
-	addr.family = AF_INET
-	addr.port = sock_htons(port)
-	addr.addr = sock_inet_addr(cast(cstring)&buf[0])
-	return addr
+	hints: AddrInfo
+	hints.family = AF_INET
+	hints.socktype = SOCK_DGRAM
+	res: ^AddrInfo
+	if sock_getaddrinfo(cast(cstring)&buf[0], nil, &hints, &res) != 0 || res == nil {
+		return {}, false
+	}
+	defer sock_freeaddrinfo(res)
+	if res.addr == nil {
+		return {}, false
+	}
+	out: SockAddr
+	out.family = AF_INET
+	out.port = sock_htons(port)
+	out.addr = res.addr.addr
+	return out, true
 }
 
 net_send :: proc(fd: int, addr: ^SockAddr, data: []u8) -> bool {
@@ -254,6 +284,116 @@ sess_send_frame :: proc(s: ^Session, stream, flags: u8, seq, ts: u32, payload: [
 		total := media_pack(buf, h, payload[off:off + n])
 		sess_send_media(s, buf[:total])
 	}
+}
+
+DEFAULT_PORT :: 4400
+
+SERVER_SCHEMES :: [2]string{"https://", "http://"}
+
+// normalize_server cleans a user typed server address. It drops an
+// optional scheme and path and fills the default port when the port is
+// missing, so "zyselfhost.com" is a valid address.
+normalize_server :: proc(s: string) -> string {
+	addr := s
+	for len(addr) > 0 && (addr[0] == ' ' || addr[0] == '\t') {
+		addr = addr[1:]
+	}
+	for len(addr) > 0 && (addr[len(addr) - 1] == ' ' || addr[len(addr) - 1] == '/') {
+		addr = addr[:len(addr) - 1]
+	}
+	for p in SERVER_SCHEMES {
+		if len(addr) > len(p) && addr[:len(p)] == p {
+			addr = addr[len(p):]
+			break
+		}
+	}
+	for i in 0..<len(addr) {
+		if addr[i] == '/' {
+			addr = addr[:i]
+			break
+		}
+	}
+	if addr == "" {
+		return ""
+	}
+	has_port := false
+	for i := len(addr) - 1; i >= 0; i -= 1 {
+		if addr[i] == ':' {
+			has_port = true
+			break
+		}
+	}
+	if has_port {
+		return addr
+	}
+	return fmt.tprintf("%s:%d", addr, DEFAULT_PORT)
+}
+
+// parse_hostport splits a server address into host and port.
+parse_hostport :: proc(server: string) -> (string, int, bool) {
+	addr := normalize_server(server)
+	colon := -1
+	for i in 0..<len(addr) {
+		if addr[i] == ':' {
+			colon = i
+			break
+		}
+	}
+	if colon < 1 || colon + 1 >= len(addr) {
+		return "", 0, false
+	}
+	port, ok := parse_port(addr[colon + 1:])
+	if !ok {
+		return "", 0, false
+	}
+	return addr[:colon], port, true
+}
+
+// room_create_now registers the room on the server right away so the
+// meeting code works before the creator enters. It returns an empty
+// string on success or the failure reason.
+room_create_now :: proc(server_addr, room, secret: string) -> string {
+	host, port, ok := parse_hostport(server_addr)
+	if !ok {
+		return "Server address must be host:port"
+	}
+	fd := net_open()
+	if fd < 0 {
+		return "Socket create failed"
+	}
+	defer sock_close(c.int(fd))
+	srv, sok := net_addr(host, u16(port))
+	if !sok {
+		return "Invalid server address"
+	}
+	join_key := derive_join_key(bytes_of(secret))
+	body := json_marshal(CreateRoomMsg{Name = room, JoinKey = b64e(join_key[:])})
+	defer delete(body)
+	env := env_marshal(Envelope{typ = MSG_CREATE_ROOM, body = body})
+	defer delete(env)
+	net_send(fd, &srv, env)
+
+	buf: [2048]u8
+	addr: SockAddr
+	for i in 0..<15 {
+		n := net_recv(fd, buf[:], &addr)
+		if n <= 0 {
+			continue
+		}
+		e, good := env_unmarshal(buf[:n])
+		if !good || e.typ != MSG_CREATE_ROOM_RPY {
+			continue
+		}
+		rpy: CreateRoomRpyMsg
+		if !json_unmarshal(e.body, &rpy) {
+			continue
+		}
+		if rpy.Result != RESULT_OK {
+			return rpy.Error
+		}
+		return ""
+	}
+	return "Server did not answer"
 }
 
 // FragAsm reassembles one fragmented media message at a time.
