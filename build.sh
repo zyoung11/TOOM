@@ -113,7 +113,19 @@ echo "[i] building FFmpeg (player superset + encoders)"
 echo "[i] building encoder shim"
 cc -O2 -I"$FFMPEG_SRC" -c h264enc.c -o h264enc.o
 
+echo "[i] building aec shim"
+c++ -O2 -std=c++17 $(pkg-config --cflags webrtc-audio-processing-1) -c aec_shim.cc -o aec_shim.o
+
 echo "[i] building TOOM client"
 odin build cmd/toom -o:speed -out:toom
 
 echo "[+] build complete"
+
+echo "[i] generating screencopy protocol"
+wayland-scanner client-header proto/wlr-screencopy-unstable-v1.xml proto/screencopy-client-protocol.h
+wayland-scanner private-code proto/wlr-screencopy-unstable-v1.xml proto/screencopy-protocol.c
+cc -O2 -c proto/screencopy-protocol.c -o proto/screencopy-protocol.o
+
+echo "[i] building screen capture shim"
+cc -O2 -c wlshim.c -o wlshim.o
+cc -O2 -Iproto -c screen_shim.c -o screen_shim.o

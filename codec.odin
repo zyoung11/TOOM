@@ -5,6 +5,7 @@ import "core:c"
 PIX_FMT_YUV420P  :: 0
 PIX_FMT_YUYV422  :: 1
 PIX_FMT_YUVJ420P :: 12
+PIX_FMT_BGRA     :: 29
 
 YuvFrame :: struct {
 	y, u, v: [^]u8,
@@ -213,24 +214,26 @@ yuyv_to_i420 :: proc(src: []u8, w, h: int, y, u, v: []u8) {
 	}
 }
 
-// OpusEnc encodes mono PCM at 48 kHz.
+// OpusEnc encodes PCM at 48 kHz in one or two channels.
 OpusEnc :: struct {
 	handle: rawptr,
+	ch:     int,
 }
 
-opus_enc_open :: proc(e: ^OpusEnc, kbps: int) -> bool {
+opus_enc_open :: proc(e: ^OpusEnc, kbps, channels: int) -> bool {
 	err: c.int = 0
-	e.handle = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &err)
+	e.handle = opus_encoder_create(48000, c.int(channels), OPUS_APPLICATION_VOIP, &err)
 	if e.handle == nil || err != 0 {
 		return false
 	}
+	e.ch = max(channels, 1)
 	rate := c.int(kbps)
 	opus_encoder_ctl(e.handle, OPUS_SET_BITRATE, &rate)
 	return true
 }
 
 opus_enc_encode :: proc(e: ^OpusEnc, pcm: []i16, out: []u8) -> int {
-	return int(opus_encode(e.handle, raw_data(pcm), c.int(len(pcm)), raw_data(out), c.int(len(out))))
+	return int(opus_encode(e.handle, raw_data(pcm), c.int(len(pcm) / e.ch), raw_data(out), c.int(len(out))))
 }
 
 opus_enc_close :: proc(e: ^OpusEnc) {
@@ -240,23 +243,26 @@ opus_enc_close :: proc(e: ^OpusEnc) {
 	}
 }
 
-// OpusDec decodes mono PCM at 48 kHz and performs packet loss
-// concealment when fed a nil packet.
+// OpusDec decodes PCM at 48 kHz in one or two channels and performs
+// packet loss concealment when fed a nil packet.
 OpusDec :: struct {
 	handle: rawptr,
+	ch:     int,
 }
 
-opus_dec_open :: proc(d: ^OpusDec) -> bool {
+opus_dec_open :: proc(d: ^OpusDec, channels: int) -> bool {
 	err: c.int = 0
-	d.handle = opus_decoder_create(48000, 1, &err)
+	d.handle = opus_decoder_create(48000, c.int(channels), &err)
+	d.ch = max(channels, 1)
 	return d.handle != nil && err == 0
 }
 
 opus_dec_decode :: proc(d: ^OpusDec, data: []u8, pcm: []i16) -> int {
+	cap := c.int(len(pcm) / d.ch)
 	if len(data) == 0 {
-		return int(opus_decode(d.handle, nil, 0, raw_data(pcm), c.int(len(pcm)), 0))
+		return int(opus_decode(d.handle, nil, 0, raw_data(pcm), cap, 0)) * d.ch
 	}
-	return int(opus_decode(d.handle, raw_data(data), c.int(len(data)), raw_data(pcm), c.int(len(pcm)), 0))
+	return int(opus_decode(d.handle, raw_data(data), c.int(len(data)), raw_data(pcm), cap, 0)) * d.ch
 }
 
 opus_dec_close :: proc(d: ^OpusDec) {

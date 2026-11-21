@@ -599,7 +599,7 @@ join_fields_init :: proc() {
 form_join :: proc() -> FormResult {
 	join_fields_init()
 	fields := &join_fields
-	sel := join_sel_state
+	sel := min(join_sel_state, len(join_fields) - 1)
 	msg := ""
 	need_draw := true
 	name_buf: [512]u8
@@ -669,7 +669,6 @@ form_join :: proc() -> FormResult {
 		}
 		act := form_key(fields[:], &sel, k)
 		join_sel_state = sel
-		create_sel_state = sel
 		if act == 1 {
 			return {back = true}
 		}
@@ -724,7 +723,7 @@ create_fields_init :: proc() {
 form_create :: proc() -> FormResult {
 	create_fields_init()
 	fields := &create_fields
-	sel := create_sel_state
+	sel := min(create_sel_state, len(create_fields) - 1)
 	msg := ""
 	need_draw := true
 	bufs: [3][512]u8
@@ -792,7 +791,6 @@ form_create :: proc() -> FormResult {
 			return {back = true}
 		}
 		act := form_key(fields[:], &sel, k)
-		join_sel_state = sel
 		create_sel_state = sel
 		if act == 1 {
 			return {back = true}

@@ -22,6 +22,7 @@ type Member struct {
 	Name     string
 	Cam      bool
 	Mic      bool
+	Screen   bool
 	Addr     netip.AddrPort
 	LastSeen time.Time
 	Subs     map[uint32]bool
@@ -117,7 +118,7 @@ func (r *Room) dropID(id uint32) (*Member, bool) {
 func (r *Room) list() []protocol.Member {
 	out := make([]protocol.Member, 0, len(r.Members))
 	for _, m := range r.Members {
-		out = append(out, protocol.Member{ID: m.ID, Name: m.Name, Cam: m.Cam, Mic: m.Mic})
+		out = append(out, protocol.Member{ID: m.ID, Name: m.Name, Cam: m.Cam, Mic: m.Mic, Screen: m.Screen})
 	}
 	return out
 }

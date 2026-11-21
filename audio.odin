@@ -1,12 +1,14 @@
 package toom
 
 import "core:c"
+import "core:fmt"
 import "core:math"
 import "core:sync"
 import ma "../Aideo/miniaudio"
 
 AUDIO_RATE    :: 48000
 AUDIO_BLOCK   :: 960
+PB_CH         :: 2
 MON_GAIN      :: 0.25
 MON_CEIL      :: 4096.0
 AUDIO_MIX_MAX :: 32767
@@ -14,16 +16,20 @@ AUDIO_MIX_MAX :: 32767
 cap_ring: RingBuf
 pb_ring:  RingBuf
 mon_ring: RingBuf
+desk_ring: RingBuf
 cap_mu:   sync.Mutex
 pb_mu:    sync.Mutex
 mon_mu:   sync.Mutex
+desk_mu:  sync.Mutex
 cap_dev:  ma.device
 pb_dev:   ma.device
+desk_dev: ma.device
 audio_ctx: ma.context_type
 audio_ok: bool
+desk_ok:  bool
 spk_mute: i32
 mic_mute: i32
-spk_vol_bits: u32
+spk_vol_bits: u32 = 0x3f800000
 pb_primed:    i32
 mic_level:    u32
 cap_level:    u32
@@ -130,7 +136,7 @@ cap_cb :: proc "c" (_: ^ma.device, _out: rawptr, input: rawptr, frames: u32) {
 }
 
 pb_cb :: proc "c" (_: ^ma.device, output: rawptr, _in: rawptr, frames: u32) {
-	dst := (([^]i16)(output))[:int(frames)]
+	dst := (([^]i16)(output))[:int(frames) * PB_CH]
 	n := len(dst)
 	if sync.atomic_load(&spk_mute) != 0 {
 		for i in 0..<n {
@@ -142,7 +148,7 @@ pb_cb :: proc "c" (_: ^ma.device, output: rawptr, _in: rawptr, frames: u32) {
 		sync.mutex_lock(&pb_mu)
 		fill := ring_fill(&pb_ring)
 		sync.mutex_unlock(&pb_mu)
-		if fill < AUDIO_RATE / 5 {
+		if fill < AUDIO_RATE / 5 * PB_CH {
 			for i in 0..<n {
 				dst[i] = 0
 			}
@@ -156,25 +162,12 @@ pb_cb :: proc "c" (_: ^ma.device, output: rawptr, _in: rawptr, frames: u32) {
 	for i in read..<n {
 		dst[i] = 0
 	}
-	vol := transmute(f32)u32(sync.atomic_load(&spk_vol_bits))
-	if vol != 1.0 {
-		for i in 0..<read {
-			s := f32(dst[i]) * vol
-			if s > AUDIO_MIX_MAX {
-				s = AUDIO_MIX_MAX
-			} else if s < -32768 {
-				s = -32768
-			}
-			dst[i] = i16(s)
-		}
-	}
 }
 
 audio_start :: proc() -> bool {
 	ring_init(&cap_ring, AUDIO_RATE * 2)
-	ring_init(&pb_ring, AUDIO_RATE * 2)
+	ring_init(&pb_ring, AUDIO_RATE * 2 * 2)
 	ring_init(&mon_ring, AUDIO_RATE * 2)
-	sync.atomic_store(&spk_vol_bits, transmute(u32)f32(1.0))
 
 	ctx_config := ma.context_config_init()
 	if ma.context_init(nil, 0, &ctx_config, &audio_ctx) != .SUCCESS {
@@ -212,7 +205,7 @@ audio_start :: proc() -> bool {
 		pcfg.playback.pDeviceID = &sel_pb
 	}
 	pcfg.playback.format = .s16
-	pcfg.playback.channels = 1
+	pcfg.playback.channels = PB_CH
 	pcfg.sampleRate = AUDIO_RATE
 	pcfg.periodSizeInMilliseconds = 20
 	pcfg.dataCallback = pb_cb
@@ -309,4 +302,99 @@ audio_vol_add :: proc(delta: f32) {
 		v = 2
 	}
 	sync.atomic_store(&spk_vol_bits, transmute(u32)f32(v))
+}
+
+// desk_cb stores one captured system audio block.
+desk_cb :: proc "c" (_: ^ma.device, _out: rawptr, input: rawptr, frames: u32) {
+	if input == nil {
+		return
+	}
+	src := ([^]i16)(input)
+	sync.mutex_lock(&desk_mu)
+	ring_write(&desk_ring, src[:int(frames) * PB_CH])
+	sync.mutex_unlock(&desk_mu)
+}
+
+// desk_capture_fill returns the buffered system audio samples.
+desk_capture_fill :: proc() -> int {
+	sync.mutex_lock(&desk_mu)
+	n := ring_fill(&desk_ring)
+	sync.mutex_unlock(&desk_mu)
+	return n
+}
+
+// desk_capture_pop drains one block of system audio.
+desk_capture_pop :: proc(dst: []i16) -> int {
+	sync.mutex_lock(&desk_mu)
+	n := ring_read(&desk_ring, dst)
+	sync.mutex_unlock(&desk_mu)
+	return n
+}
+
+// desk_find_monitor returns the capture id of the monitor belonging to
+// the active playback device. Pulse monitor ids are the sink id plus a
+// ".monitor" suffix.
+desk_find_monitor :: proc() -> (ma.device_id, bool) {
+	target := ""
+	if dev_sel[1] > 0 && dev_sel[1] < len(dev_lists[1]) {
+		target = id_str(&dev_lists[1][dev_sel[1]].id)
+	} else {
+		for j in 1..<len(dev_lists[1]) {
+			e := &dev_lists[1][j]
+			if e.is_default {
+				target = id_str(&e.id)
+				break
+			}
+		}
+	}
+	if target == "" {
+		return {}, false
+	}
+	want := fmt.tprintf("%s.monitor", target)
+	for j in 0..<len(mon_list) {
+		e := &mon_list[j]
+		if id_str(&e.id) == want {
+			return e.id, true
+		}
+	}
+	return {}, false
+}
+
+// desk_start opens the monitor of the active output device for system
+// audio sharing.
+desk_start :: proc() -> bool {
+	if !audio_ok {
+		return false
+	}
+	dev_init()
+	id, ok := desk_find_monitor()
+	if !ok {
+		return false
+	}
+	ring_init(&desk_ring, AUDIO_RATE * 2 * 2)
+	cfg := ma.device_config_init(.capture)
+	cfg.capture.pDeviceID = &id
+	cfg.capture.format = .s16
+	cfg.capture.channels = PB_CH
+	cfg.sampleRate = AUDIO_RATE
+	cfg.periodSizeInMilliseconds = 20
+	cfg.dataCallback = desk_cb
+	if ma.device_init(&audio_ctx, &cfg, &desk_dev) != .SUCCESS {
+		return false
+	}
+	if ma.device_start(&desk_dev) != .SUCCESS {
+		ma.device_uninit(&desk_dev)
+		return false
+	}
+	desk_ok = true
+	return true
+}
+
+// desk_stop closes the system audio capture device.
+desk_stop :: proc() {
+	if !desk_ok {
+		return
+	}
+	ma.device_uninit(&desk_dev)
+	desk_ok = false
 }

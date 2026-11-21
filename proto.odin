@@ -25,9 +25,11 @@ MSG_MEDIA          :: 0x40
 RESULT_OK       :: "ok"
 RESULT_REJECTED :: "rejected"
 
-MEDIA_HDR_LEN   :: 16
-MEDIA_STREAM_VIDEO :: 0
-MEDIA_STREAM_AUDIO :: 1
+MEDIA_HDR_LEN   :: 18
+MEDIA_STREAM_VIDEO  :: 0
+MEDIA_STREAM_AUDIO  :: 1
+MEDIA_STREAM_DESK   :: 2
+MEDIA_STREAM_SCREEN :: 3
 MEDIA_FLAG_KEY     :: 0x01
 
 CreateRoomMsg :: struct {
@@ -56,10 +58,11 @@ JoinProofMsg :: struct {
 }
 
 MemberInfo :: struct {
-	ID:   u32 `json:"id"`,
-	Name: string `json:"name"`,
-	Cam:  bool `json:"cam"`,
-	Mic:  bool `json:"mic"`,
+	ID:     u32 `json:"id"`,
+	Name:   string `json:"name"`,
+	Cam:    bool `json:"cam"`,
+	Mic:    bool `json:"mic"`,
+	Screen: bool `json:"screen"`,
 }
 
 JoinReplyMsg :: struct {
@@ -74,10 +77,11 @@ KeepAliveMsg :: struct {
 }
 
 MemberJoinMsg :: struct {
-	ID:   u32  `json:"id"`,
-	Name: string `json:"name"`,
-	Cam:  bool  `json:"cam"`,
-	Mic:  bool  `json:"mic"`,
+	ID:     u32 `json:"id"`,
+	Name:   string `json:"name"`,
+	Cam:    bool `json:"cam"`,
+	Mic:    bool `json:"mic"`,
+	Screen: bool `json:"screen"`,
 }
 
 MemberLeaveMsg :: struct {
@@ -85,9 +89,10 @@ MemberLeaveMsg :: struct {
 }
 
 MemberUpdateMsg :: struct {
-	ID:  u32 `json:"id"`,
-	Cam: bool `json:"cam"`,
-	Mic: bool `json:"mic"`,
+	ID:     u32 `json:"id"`,
+	Cam:    bool `json:"cam"`,
+	Mic:    bool `json:"mic"`,
+	Screen: bool `json:"screen"`,
 }
 
 SubscribeMsg :: struct {
@@ -164,8 +169,8 @@ MediaHead :: struct {
 	ts:     u32,
 	stream: u8,
 	flags:  u8,
-	frag:   u8,
-	cnt:    u8,
+	frag:   u16,
+	cnt:    u16,
 }
 
 media_pack :: proc(buf: []u8, h: MediaHead, payload: []u8) -> int {
@@ -183,8 +188,10 @@ media_pack :: proc(buf: []u8, h: MediaHead, payload: []u8) -> int {
 	buf[11] = u8(h.ts >> 24)
 	buf[12] = h.stream
 	buf[13] = h.flags
-	buf[14] = h.frag
-	buf[15] = h.cnt
+	buf[14] = u8(h.frag)
+	buf[15] = u8(h.frag >> 8)
+	buf[16] = u8(h.cnt)
+	buf[17] = u8(h.cnt >> 8)
 	return copy(buf[MEDIA_HDR_LEN:], payload) + MEDIA_HDR_LEN
 }
 
@@ -198,8 +205,8 @@ media_unpack :: proc(buf: []u8) -> (MediaHead, []u8, bool) {
 		ts = u32(buf[8]) | u32(buf[9]) << 8 | u32(buf[10]) << 16 | u32(buf[11]) << 24,
 		stream = buf[12],
 		flags = buf[13],
-		frag = buf[14],
-		cnt = buf[15],
+		frag = u16(buf[14]) | u16(buf[15]) << 8,
+		cnt = u16(buf[16]) | u16(buf[17]) << 8,
 	}
 	return h, buf[MEDIA_HDR_LEN:], true
 }

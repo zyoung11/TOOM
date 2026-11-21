@@ -125,10 +125,11 @@ net_recv :: proc(fd: int, buf: []u8, addr: ^SockAddr) -> int {
 }
 
 PeerInfo :: struct {
-	id:   u32,
-	name: string,
-	cam:  bool,
-	mic:  bool,
+	id:     u32,
+	name:   string,
+	cam:    bool,
+	mic:    bool,
+	screen: bool,
 }
 
 // Session is the client side protocol state for one room.
@@ -238,7 +239,7 @@ sess_join :: proc(s: ^Session) -> (bool, string) {
 		sync.mutex_lock(&s.peer_mu)
 		for m in rpy.Members {
 			if m.ID != s.self_id {
-				s.peers[m.ID] = PeerInfo{id = m.ID, name = m.Name, cam = m.Cam, mic = m.Mic}
+				s.peers[m.ID] = PeerInfo{id = m.ID, name = m.Name, cam = m.Cam, mic = m.Mic, screen = m.Screen}
 			}
 		}
 		sync.mutex_unlock(&s.peer_mu)
@@ -254,8 +255,8 @@ sess_keepalive :: proc(s: ^Session) {
 	sess_send_env(s, MSG_KEEPALIVE, body)
 }
 
-sess_update :: proc(s: ^Session, cam, mic: bool) {
-	body := json_marshal(MemberUpdateMsg{ID = s.self_id, Cam = cam, Mic = mic})
+sess_update :: proc(s: ^Session, cam, mic, screen: bool) {
+	body := json_marshal(MemberUpdateMsg{ID = s.self_id, Cam = cam, Mic = mic, Screen = screen})
 	defer delete(body)
 	sess_send_env(s, MSG_MEMBER_UPDATE, body)
 }
@@ -277,13 +278,13 @@ sess_send_media :: proc(s: ^Session, plain: []u8) {
 
 // sess_send_frame fragments one media frame and ships every fragment.
 sess_send_frame :: proc(s: ^Session, stream, flags: u8, seq, ts: u32, payload: []u8) {
-	cnt := u8((len(payload) + MEDIA_CHUNK - 1) / MEDIA_CHUNK)
+	cnt := u16((len(payload) + MEDIA_CHUNK - 1) / MEDIA_CHUNK)
 	buf := make([]u8, MEDIA_HDR_LEN + MEDIA_CHUNK)
 	defer delete(buf)
 	for frag in 0..<int(cnt) {
 		off := frag * MEDIA_CHUNK
 		n := min(MEDIA_CHUNK, len(payload) - off)
-		h := MediaHead{src = s.self_id, seq = seq, ts = ts, stream = stream, flags = flags, frag = u8(frag), cnt = cnt}
+		h := MediaHead{src = s.self_id, seq = seq, ts = ts, stream = stream, flags = flags, frag = u16(frag), cnt = cnt}
 		total := media_pack(buf, h, payload[off:off + n])
 		sess_send_media(s, buf[:total])
 	}
@@ -402,7 +403,7 @@ room_create_now :: proc(server_addr, room, secret: string) -> string {
 // FragAsm reassembles one fragmented media message at a time.
 FragAsm :: struct {
 	seq:   u32,
-	cnt:   u8,
+	cnt:   u16,
 	total: int,
 	nrecv: int,
 	valid: bool,

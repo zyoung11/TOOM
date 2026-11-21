@@ -107,10 +107,11 @@ type JoinProof struct {
 
 // Member describes one participant.
 type Member struct {
-	ID   uint32 `json:"id"`
-	Name string `json:"name"`
-	Cam  bool   `json:"cam"`
-	Mic  bool   `json:"mic"`
+	ID     uint32 `json:"id"`
+	Name   string `json:"name"`
+	Cam    bool   `json:"cam"`
+	Mic    bool   `json:"mic"`
+	Screen bool   `json:"screen"`
 }
 
 // JoinReply completes the join handshake.
@@ -128,10 +129,11 @@ type KeepAlive struct {
 
 // MemberJoin announces a new participant to the room.
 type MemberJoin struct {
-	ID   uint32 `json:"id"`
-	Name string `json:"name"`
-	Cam  bool   `json:"cam"`
-	Mic  bool   `json:"mic"`
+	ID     uint32 `json:"id"`
+	Name   string `json:"name"`
+	Cam    bool   `json:"cam"`
+	Mic    bool   `json:"mic"`
+	Screen bool   `json:"screen"`
 }
 
 // MemberLeave announces a participant exit.
@@ -141,9 +143,10 @@ type MemberLeave struct {
 
 // MemberUpdate announces device state changes.
 type MemberUpdate struct {
-	ID  uint32 `json:"id"`
-	Cam bool   `json:"cam"`
-	Mic bool   `json:"mic"`
+	ID     uint32 `json:"id"`
+	Cam    bool   `json:"cam"`
+	Mic    bool   `json:"mic"`
+	Screen bool   `json:"screen"`
 }
 
 // Subscribe replaces the media subscription list of the sender. An

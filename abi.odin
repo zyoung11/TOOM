@@ -4,6 +4,10 @@ import "core:c"
 
 foreign import toomlibs {
 	"h264enc.o",
+	"aec_shim.o",
+	"wlshim.o",
+	"screen_shim.o",
+	"proto/screencopy-protocol.o",
 	"ffstatic/libavcodec.a",
 	"ffstatic/libavformat.a",
 	"ffstatic/libswscale.a",
@@ -16,6 +20,8 @@ foreign import toomlibs {
 	"system:va",
 	"system:va-drm",
 	"system:drm",
+	"system:webrtc-audio-processing-1",
+	"system:stdc++",
 	"system:m",
 	"system:pthread",
 	"system:dl",
@@ -80,6 +86,16 @@ foreign toomlibs {
 	opus_decoder_create :: proc(fs, ch: c.int, err: ^c.int) -> rawptr ---
 	opus_decode :: proc(dec: rawptr, data: [^]u8, len: c.int, pcm: [^]i16, frames: c.int, fec: c.int) -> c.int ---
 	opus_decoder_destroy :: proc(dec: rawptr) ---
+
+	toom_aec_open :: proc(rate, cap_ch, play_ch: c.int) -> rawptr ---
+	toom_aec_close :: proc(p: rawptr) ---
+	toom_aec_play :: proc(p: rawptr, data: [^]i16, frames: c.int) ---
+	toom_aec_cap :: proc(p: rawptr, data: [^]i16, frames: c.int) ---
+
+	toom_screen_open :: proc(output_index: c.int) -> rawptr ---
+	toom_screen_poll :: proc(p: rawptr, timeout_ms: c.int) -> c.int ---
+	toom_screen_frame :: proc(p: rawptr, w, h, stride, y_invert: ^c.int) -> [^]u8 ---
+	toom_screen_close :: proc(p: rawptr) ---
 }
 
 OPUS_APPLICATION_VOIP :: 2048

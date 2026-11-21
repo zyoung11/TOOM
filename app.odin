@@ -10,8 +10,8 @@ import "core:time"
 
 app_stop: i32
 
-tx_audio_n: u32
-rx_audio_n: u32
+tx_media_n: u32
+rx_media_n: u32
 
 app_fps:      int
 enc_kbps:     int
@@ -20,15 +20,25 @@ cam_dev:      string
 cam_w_req:    int
 cam_h_req:    int
 audio_enc:    OpusEnc
+desk_enc:     OpusEnc
 
 // PeerRT is the per remote member runtime state.
 PeerRT :: struct {
 	info:    PeerInfo,
 	vdec:    Dec,
 	adec:    OpusDec,
+	desk_dec: OpusDec,
+	desk_rx_aec: Aec,
+	screen_dec: Dec,
+	screen_engine: ^aideo.Engine,
+	screen_w:   int,
+	screen_h:   int,
+	screen_tile: Tile,
 	fas:     FragAsm,
 	jb:      RingBuf,
 	jb_mu:   sync.Mutex,
+	desk_ring: RingBuf,
+	desk_mu:   sync.Mutex,
 	engine:  ^aideo.Engine,
 	src_w:   int,
 	src_h:   int,
@@ -54,6 +64,24 @@ cam_off:     i32
 self_mirror: i32 = 1
 ui_modal:    i32
 audio_swap:  i32
+desk_ready:  i32
+desk_send:   i32
+mic_aec:     Aec
+desk_aec:    Aec
+aec_mu:      sync.Mutex
+screen_cap:   ScreenCap
+screen_enc:   H264Enc
+screen_sws:   rawptr
+screen_y:     []u8
+screen_u:     []u8
+screen_v:     []u8
+screen_sw:    int
+screen_sh:    int
+screen_ready: i32
+screen_send:  i32
+screen_owner: u32
+mode_saved:   LayoutMode
+focus_saved:  int
 mir_y:       []u8
 mir_u:       []u8
 mir_v:       []u8
@@ -155,7 +183,9 @@ layout_apply :: proc() {
 	tiles: []Tile
 	card: Tile
 	has_card: bool
-	if conf_mode == .Grid {
+	if screen_owner != 0 {
+		tiles = layout_focus(n + 1, n, self_w, self_h)
+	} else if conf_mode == .Grid {
 		tiles, card, has_card = layout_grid(n, self_w, self_h)
 	} else {
 		tiles = layout_focus(n, conf_focus, self_w, self_h)
@@ -173,6 +203,14 @@ layout_apply :: proc() {
 			}
 		}
 		tile_fit(&tiles[i], src_w, src_h)
+	}
+	if screen_owner != 0 {
+		sw2, sh2 := self_w, self_h
+		sp := peer_get(screen_owner)
+		if sp != nil && sp.screen_w > 0 {
+			sw2, sh2 = sp.screen_w, sp.screen_h
+		}
+		tile_fit(&tiles[n], sw2, sh2)
 	}
 	moved := len(conf_tiles) != n
 	for i in 0..<min(len(conf_tiles), n) {
@@ -194,6 +232,10 @@ layout_apply :: proc() {
 				aideo.aideo_close(p.engine)
 				p.engine = nil
 			}
+			if p.screen_engine != nil {
+				aideo.aideo_close(p.screen_engine)
+				p.screen_engine = nil
+			}
 		}
 		sync.mutex_unlock(&peer_mu)
 	}
@@ -211,6 +253,15 @@ layout_apply :: proc() {
 		p.has_tile = true
 		if p.engine == nil && p.src_w > 0 {
 			p.engine = engine_new(p.src_w, p.src_h, p.tile)
+		}
+	}
+	if screen_owner != 0 {
+		sp := peers[screen_owner]
+		if sp != nil {
+			sp.screen_tile = tiles[n]
+			if sp.screen_engine == nil && sp.screen_w > 0 {
+				sp.screen_engine = engine_new(sp.screen_w, sp.screen_h, sp.screen_tile)
+			}
 		}
 	}
 	sync.mutex_unlock(&peer_mu)
@@ -240,9 +291,16 @@ peer_add :: proc(info: PeerInfo) {
 	p := new(PeerRT)
 	p.info = info
 	_ = dec_open(&p.vdec, "h264")
-	_ = opus_dec_open(&p.adec)
+	_ = dec_open(&p.screen_dec, "h264")
+	_ = opus_dec_open(&p.adec, 1)
+	_ = opus_dec_open(&p.desk_dec, 2)
+	_ = aec_open(&p.desk_rx_aec, AUDIO_RATE, PB_CH, PB_CH)
 	ring_init(&p.jb, AUDIO_RATE)
+	ring_init(&p.desk_ring, AUDIO_RATE * 2 * 2)
 	peers[info.id] = p
+	if info.screen {
+		screen_set_owner(info.id)
+	}
 	sync.atomic_store(&layout_dirty, 1)
 }
 
@@ -257,10 +315,22 @@ peer_remove :: proc(id: u32) {
 	if p.engine != nil {
 		aideo.aideo_close(p.engine)
 	}
+	if p.screen_engine != nil {
+		aideo.aideo_close(p.screen_engine)
+	}
 	dec_close(&p.vdec)
+	dec_close(&p.screen_dec)
 	opus_dec_close(&p.adec)
+	opus_dec_close(&p.desk_dec)
+	sync.mutex_lock(&aec_mu)
+	aec_close(&p.desk_rx_aec)
+	sync.mutex_unlock(&aec_mu)
 	delete(p.jb.data)
+	delete(p.desk_ring.data)
 	free(p)
+	if screen_owner == id {
+		screen_set_owner(0)
+	}
 	sync.atomic_store(&layout_dirty, 1)
 }
 
@@ -300,6 +370,22 @@ audio_block :: proc(p: ^PeerRT, data: []u8) {
 	sync.mutex_unlock(&p.jb_mu)
 }
 
+// desk_block decodes one stereo system audio packet into the peer desk
+// ring after removing the local playback contribution.
+desk_block :: proc(p: ^PeerRT, data: []u8) {
+	buf: [AUDIO_BLOCK * 2]i16
+	n := opus_dec_decode(&p.desk_dec, data, buf[:])
+	if n <= 0 {
+		return
+	}
+	sync.mutex_lock(&aec_mu)
+	aec_cap(&p.desk_rx_aec, buf[:], AUDIO_BLOCK)
+	sync.mutex_unlock(&aec_mu)
+	sync.mutex_lock(&p.desk_mu)
+	ring_write(&p.desk_ring, buf[:n])
+	sync.mutex_unlock(&p.desk_mu)
+}
+
 // cam_pipeline_start opens the camera, the conversion buffers and the
 // encoder so the meeting can send video. It reports whether the
 // pipeline is ready.
@@ -334,10 +420,17 @@ cam_pipeline_start :: proc() -> bool {
 // output take effect during a meeting.
 audio_switch :: proc() {
 	vol := sync.atomic_load(&spk_vol_bits)
+	desk_on := sync.atomic_load(&desk_ready) != 0
 	sync.atomic_store(&audio_swap, 1)
 	time.sleep(150 * time.Millisecond)
+	if desk_on {
+		desk_stop()
+	}
 	audio_stop()
 	audio_start()
+	if desk_on && !desk_start() {
+		sync.atomic_store(&desk_send, 0)
+	}
 	sync.atomic_store(&spk_vol_bits, vol)
 	sync.atomic_store(&audio_swap, 0)
 }
@@ -380,7 +473,7 @@ cam_switch :: proc() {
 		}
 		layout_apply()
 	}
-	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 }
 
 // dev_modal_run opens the device picker during a meeting, keeps the
@@ -453,6 +546,7 @@ capture_thread :: proc() {
 					}
 					seq += 1
 					sess_send_frame(&sess, MEDIA_STREAM_VIDEO, flags, seq, ms_now(), enc_out[:n])
+					sync.atomic_store(&tx_media_n, sync.atomic_load(&tx_media_n) + 1)
 				}
 			}
 		}
@@ -488,20 +582,232 @@ audio_tx_thread :: proc() {
 		}
 		level_store(&mic_level, peak)
 		audio_monitor_push(pcm[:])
+		sync.mutex_lock(&aec_mu)
+		aec_cap(&mic_aec, pcm[:], AUDIO_BLOCK)
+		sync.mutex_unlock(&aec_mu)
 		n := opus_enc_encode(&audio_enc, pcm[:], out[:])
 		if n > 0 {
 			seq += 1
 			sess_send_frame(&sess, MEDIA_STREAM_AUDIO, 0, seq, ms_now(), out[:n])
-			sync.atomic_store(&tx_audio_n, sync.atomic_load(&tx_audio_n) + 1)
+			sync.atomic_store(&tx_media_n, sync.atomic_load(&tx_media_n) + 1)
+		}
+	}
+}
+
+// desk_pipeline_start opens system audio sharing so the active output
+// monitor is captured and sent to the room.
+desk_pipeline_start :: proc() -> bool {
+	if sync.atomic_load(&desk_ready) != 0 {
+		return true
+	}
+	if !desk_start() {
+		return false
+	}
+	if !opus_enc_open(&desk_enc, 128000, 2) {
+		desk_stop()
+		return false
+	}
+	_ = aec_open(&desk_aec, AUDIO_RATE, PB_CH, PB_CH)
+	sync.atomic_store(&desk_ready, 1)
+	return true
+}
+
+desk_tx_thread :: proc() {
+	buf: [AUDIO_BLOCK * 2]i16
+	out: [4000]u8
+	seq: u32
+	for sync.atomic_load(&app_stop) == 0 {
+		time.sleep(5 * time.Millisecond)
+		if sync.atomic_load(&audio_swap) != 0 {
+			continue
+		}
+		if sync.atomic_load(&desk_ready) == 0 {
+			continue
+		}
+		if sync.atomic_load(&desk_send) == 0 {
+			desk_capture_pop(buf[:])
+			continue
+		}
+		if desk_capture_fill() < AUDIO_BLOCK * PB_CH {
+			continue
+		}
+		desk_capture_pop(buf[:])
+		sync.mutex_lock(&aec_mu)
+		aec_cap(&desk_aec, buf[:], AUDIO_BLOCK)
+		sync.mutex_unlock(&aec_mu)
+		n := opus_enc_encode(&desk_enc, buf[:], out[:])
+		if n > 0 {
+			seq += 1
+			sess_send_frame(&sess, MEDIA_STREAM_DESK, 0, seq, ms_now(), out[:n])
+		}
+	}
+}
+
+// screen_set_owner tracks which member streams a screen and swaps the
+// layout to the screen arrangement automatically.
+screen_set_owner :: proc(id: u32) {
+	if id == screen_owner {
+		return
+	}
+	if id != 0 && screen_owner == 0 {
+		mode_saved = conf_mode
+		focus_saved = conf_focus
+	}
+	screen_owner = id
+	if id == 0 {
+		conf_mode = mode_saved
+		conf_focus = focus_saved
+	}
+	sync.atomic_store(&layout_dirty, 1)
+}
+
+// screen_frame_in routes one decoded screen frame into the owner
+// engine, recreating it when the source size changes.
+screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
+	if p.screen_engine == nil || p.screen_w != f.w || p.screen_h != f.h {
+		p.screen_w = f.w
+		p.screen_h = f.h
+		if p.screen_tile.bw == 0 {
+			return
+		}
+		tile_fit(&p.screen_tile, f.w, f.h)
+		if p.screen_engine != nil {
+			aideo.aideo_close(p.screen_engine)
+		}
+		p.screen_engine = engine_new(f.w, f.h, p.screen_tile)
+	}
+	engine_push(p.screen_engine, f)
+}
+
+// screen_pipeline_start opens the screen capture so the meeting can
+// send the desktop picture.
+screen_pipeline_start :: proc() -> bool {
+	if sync.atomic_load(&screen_ready) != 0 {
+		return true
+	}
+	if !screen_open(&screen_cap, 0) {
+		return false
+	}
+	sync.atomic_store(&screen_ready, 1)
+	return true
+}
+
+// screen_teardown releases the scaler, buffers and encoder.
+screen_teardown :: proc() {
+	if screen_sws != nil {
+		sws_freeContext(screen_sws)
+		screen_sws = nil
+	}
+	h264_enc_close(&screen_enc)
+	delete(screen_y)
+	delete(screen_u)
+	delete(screen_v)
+	screen_y = nil
+	screen_u = nil
+	screen_v = nil
+	screen_sw = 0
+	screen_sh = 0
+}
+
+// screen_stop closes the screen capture pipeline.
+screen_stop :: proc() {
+	sync.atomic_store(&screen_send, 0)
+	sync.atomic_store(&screen_ready, 0)
+	screen_close(&screen_cap)
+	screen_teardown()
+}
+
+// screen_setup rebuilds the scaler, conversion buffers and encoder for
+// a new screen size.
+screen_setup :: proc(w, h: int) {
+	screen_teardown()
+	screen_sw = w
+	screen_sh = h
+	screen_y = make([]u8, w * h)
+	screen_u = make([]u8, w * h / 4)
+	screen_v = make([]u8, w * h / 4)
+	screen_sws = sws_getContext(c.int(w), c.int(h), PIX_FMT_BGRA, c.int(w), c.int(h), PIX_FMT_YUV420P, 1, nil, nil, nil)
+	_ = h264_enc_open(&screen_enc, w, h, 15, 2000, enc_prefer)
+}
+
+// screen_tx_thread captures the desktop, encodes it and sends the
+// stream to the room.
+screen_tx_thread :: proc() {
+	out := make([]u8, 1 << 21)
+	defer delete(out)
+	last: time.Time
+	first := true
+	seq: u32
+	for sync.atomic_load(&app_stop) == 0 {
+		time.sleep(5 * time.Millisecond)
+		if sync.atomic_load(&screen_ready) == 0 || sync.atomic_load(&screen_send) == 0 {
+			continue
+		}
+		r := screen_poll(&screen_cap, 100)
+		if r < 0 {
+			screen_stop()
+			continue
+		}
+		if r == 0 {
+			continue
+		}
+		w, h, stride, yinv := 0, 0, 0, 0
+		data := screen_frame(&screen_cap, &w, &h, &stride, &yinv)
+		if data == nil {
+			continue
+		}
+		now := time.now()
+		if !first && time.since(last) < 66 * time.Millisecond {
+			continue
+		}
+		first = false
+		last = now
+		if screen_sw != w || screen_sh != h || screen_sws == nil {
+			screen_setup(w, h)
+		}
+		srcp := raw_data(data)
+		sstride := c.int(stride)
+		if yinv != 0 {
+			srcp = ([^]u8)(&data[(h - 1) * stride])
+			sstride = -sstride
+		}
+		srcData: [4][^]u8
+		srcStride: [4]c.int
+		dstData: [4][^]u8
+		dstStride: [4]c.int
+		srcData[0] = srcp
+		srcStride[0] = sstride
+		dstData[0] = raw_data(screen_y)
+		dstData[1] = raw_data(screen_u)
+		dstData[2] = raw_data(screen_v)
+		dstStride[0] = c.int(w)
+		dstStride[1] = c.int(w / 2)
+		dstStride[2] = c.int(w / 2)
+		sws_scale(screen_sws, &srcData, &srcStride, 0, c.int(h), &dstData, &dstStride)
+		f := YuvFrame{
+			y = raw_data(screen_y), u = raw_data(screen_u), v = raw_data(screen_v),
+			sy = c.int(w), sc = c.int(w / 2), w = w, h = h,
+		}
+		n, key := h264_enc_encode(&screen_enc, f, out)
+		if n > 0 {
+			flags := u8(0)
+			if key {
+				flags = MEDIA_FLAG_KEY
+			}
+			seq += 1
+			sess_send_frame(&sess, MEDIA_STREAM_SCREEN, flags, seq, ms_now(), out[:n])
+			sync.atomic_store(&tx_media_n, sync.atomic_load(&tx_media_n) + 1)
 		}
 	}
 }
 
 mix_thread :: proc() {
-	mix := make([]i16, AUDIO_BLOCK)
-	tmp := make([]i16, AUDIO_BLOCK)
+	mix := make([]i16, AUDIO_BLOCK * PB_CH)
+	tmp := make([]i16, AUDIO_BLOCK * PB_CH)
+	mono := make([]i16, AUDIO_BLOCK)
 	defer delete(mix)
 	defer delete(tmp)
+	defer delete(mono)
 	keep := 0
 	for sync.atomic_load(&app_stop) == 0 {
 		time.sleep(20 * time.Millisecond)
@@ -524,16 +830,23 @@ mix_thread :: proc() {
 		sync.mutex_unlock(&peer_mu)
 		for p in list {
 			sync.mutex_lock(&p.jb_mu)
-			n := ring_read(&p.jb, tmp[:])
+			n := ring_read(&p.jb, mono[:])
 			sync.mutex_unlock(&p.jb_mu)
 			for i in 0..<n {
+				mix[2 * i] += mono[i]
+				mix[2 * i + 1] += mono[i]
+			}
+			sync.mutex_lock(&p.desk_mu)
+			dn := ring_read(&p.desk_ring, tmp[:])
+			sync.mutex_unlock(&p.desk_mu)
+			for i in 0..<dn {
 				mix[i] += tmp[i]
 			}
 		}
-		delete(list)
-		mn := audio_monitor_pop(tmp[:])
+		mn := audio_monitor_pop(mono[:])
 		for i in 0..<mn {
-			mix[i] += tmp[i]
+			mix[2 * i] += mono[i]
+			mix[2 * i + 1] += mono[i]
 		}
 		for i in 0..<len(mix) {
 			if mix[i] > AUDIO_MIX_MAX {
@@ -553,6 +866,26 @@ mix_thread :: proc() {
 			}
 		}
 		level_store(&rx_level, peak)
+		vol := transmute(f32)u32(sync.atomic_load(&spk_vol_bits))
+		if vol != 1.0 {
+			for i in 0..<len(mix) {
+				s := f32(mix[i]) * vol
+				if s > AUDIO_MIX_MAX {
+					s = AUDIO_MIX_MAX
+				} else if s < -32768 {
+					s = -32768
+				}
+				mix[i] = i16(s)
+			}
+		}
+		sync.mutex_lock(&aec_mu)
+		aec_play(&mic_aec, mix, AUDIO_BLOCK)
+		aec_play(&desk_aec, mix, AUDIO_BLOCK)
+		for p in list {
+			aec_play(&p.desk_rx_aec, mix, AUDIO_BLOCK)
+		}
+		sync.mutex_unlock(&aec_mu)
+		delete(list)
 		audio_play_push(mix)
 	}
 }
@@ -588,6 +921,12 @@ rx_thread :: proc() {
 				if p != nil {
 					p.info.cam = m.Cam
 					p.info.mic = m.Mic
+					p.info.screen = m.Screen
+				}
+				if m.Screen {
+					screen_set_owner(m.ID)
+				} else if screen_owner == m.ID {
+					screen_set_owner(0)
 				}
 			}
 		case MSG_MEDIA:
@@ -616,11 +955,24 @@ route_media :: proc(blob: []u8) {
 	if done {
 		if h.stream == MEDIA_STREAM_VIDEO {
 			f, ok2 := dec_feed(&p.vdec, frame)
+			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
 			if ok2 {
 				video_frame(p, f)
 			}
+		} else if h.stream == MEDIA_STREAM_SCREEN {
+			f, ok2 := dec_feed(&p.screen_dec, frame)
+			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
+			if ok2 {
+				if screen_owner == 0 {
+					screen_set_owner(h.src)
+				}
+				screen_frame_in(p, f)
+			}
+		} else if h.stream == MEDIA_STREAM_DESK {
+			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
+			desk_block(p, frame)
 		} else {
-			sync.atomic_store(&rx_audio_n, sync.atomic_load(&rx_audio_n) + 1)
+			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
 			audio_block(p, frame)
 		}
 	}
@@ -669,7 +1021,7 @@ conf_key :: proc(k: Key) -> bool {
 			audio_toggle_spk()
 		case 'n', 'N':
 			audio_toggle_mic()
-			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'c', 'C':
 			if sync.atomic_load(&cam_ready) != 0 {
 				off := 1 - sync.atomic_load(&cam_off)
@@ -688,7 +1040,7 @@ conf_key :: proc(k: Key) -> bool {
 				}
 				layout_apply()
 			}
-			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'f', 'F':
 			if conf_mode == .Grid {
 				conf_mode = .Focus
@@ -698,6 +1050,23 @@ conf_key :: proc(k: Key) -> bool {
 			layout_apply()
 		case 'h', 'H':
 			sync.atomic_store(&self_mirror, 1 - sync.atomic_load(&self_mirror))
+		case 'a', 'A':
+			if sync.atomic_load(&desk_ready) == 0 {
+				if desk_pipeline_start() {
+					sync.atomic_store(&desk_send, 1)
+				}
+			} else {
+				sync.atomic_store(&desk_send, 1 - sync.atomic_load(&desk_send))
+			}
+		case 's', 'S':
+			if sync.atomic_load(&screen_ready) == 0 {
+				if screen_pipeline_start() {
+					sync.atomic_store(&screen_send, 1)
+				}
+			} else {
+				sync.atomic_store(&screen_send, 1 - sync.atomic_load(&screen_send))
+			}
+			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'j', 'J':
 			if color_idx > 0 {
 				color_idx -= 1
@@ -757,14 +1126,15 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	sync.atomic_store(&cam_ready, 0)
 	sync.atomic_store(&cam_off, 1)
 	sync.atomic_store(&send_video, 0)
-	sync.atomic_store(&tx_audio_n, 0)
-	sync.atomic_store(&rx_audio_n, 0)
+	sync.atomic_store(&tx_media_n, 0)
+	sync.atomic_store(&rx_media_n, 0)
 	if cam_on && cam_pipeline_start() {
 		sync.atomic_store(&cam_off, 0)
 		sync.atomic_store(&send_video, 1)
 	}
-	if audio_start() && opus_enc_open(&audio_enc, 24000) {
+	if audio_start() && opus_enc_open(&audio_enc, 24000, 1) {
 		mic_enabled = true
+		_ = aec_open(&mic_aec, AUDIO_RATE, 1, PB_CH)
 	} else {
 		mic_enabled = false
 	}
@@ -773,7 +1143,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	} else {
 		sync.atomic_store(&mic_mute, 1)
 	}
-	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, false)
 
 	screen_clear()
 	self_engine = nil
@@ -791,6 +1161,8 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	t_rx := thread.create_and_start(rx_thread)
 	t_mix := thread.create_and_start(mix_thread)
 	t_cap := thread.create_and_start(capture_thread)
+	t_dtx := thread.create_and_start(desk_tx_thread)
+	t_stx := thread.create_and_start(screen_tx_thread)
 	if mic_enabled {
 		t_atx = thread.create_and_start(audio_tx_thread)
 	}
@@ -842,6 +1214,18 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	if t_atx != nil {
 		thread.join(t_atx)
 	}
+	thread.join(t_dtx)
+	thread.join(t_stx)
+	sync.atomic_store(&desk_send, 0)
+	sync.atomic_store(&desk_ready, 0)
+	desk_stop()
+	opus_enc_close(&desk_enc)
+	aec_close(&desk_aec)
+	aec_close(&mic_aec)
+	delete(desk_ring.data)
+	desk_ring.data = nil
+	screen_stop()
+	screen_owner = 0
 	sync.mutex_lock(&peer_mu)
 	ids := make([dynamic]u32, 0, len(peers))
 	for id in peers {

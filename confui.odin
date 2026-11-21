@@ -159,7 +159,7 @@ card_draw :: proc(b: ^FB) {
 	fb_str(b, conf_code_tail)
 	fb_at(b, t.row + 4, t.col + 2)
 	fb_fg(b, C_DIM)
-	fb_str(b, tprintf("tx %d  rx %d", sync.atomic_load(&tx_audio_n), sync.atomic_load(&rx_audio_n)))
+	fb_str(b, tprintf("tx %d  rx %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)))
 	fb_reset(b)
 }
 
@@ -170,6 +170,8 @@ footer_draw :: proc(b: ^FB, backend: string) {
 	cam_mark, cam_col := state_mark(sync.atomic_load(&cam_ready) != 0, sync.atomic_load(&send_video) != 0)
 	mic_mark, mic_col := state_mark(mic_enabled, sync.atomic_load(&mic_mute) == 0)
 	spk_mark, spk_col := state_mark(audio_ok, sync.atomic_load(&spk_mute) == 0)
+	desk_mark, desk_col := state_mark(sync.atomic_load(&desk_ready) != 0, sync.atomic_load(&desk_send) != 0)
+	scr_mark, scr_col := state_mark(sync.atomic_load(&screen_ready) != 0, sync.atomic_load(&screen_send) != 0)
 	members := 1 + peer_count()
 	status := make([dynamic]Piece, 0, 10)
 	defer delete(status)
@@ -179,11 +181,13 @@ footer_draw :: proc(b: ^FB, backend: string) {
 	append(&status, Piece{l = "mic", r = mic_mark, rc = mic_col, pri = 1})
 	append(&status, Piece{r = level_bar(int(sync.atomic_load(&cap_level))), rc = C_GREEN, pri = 2})
 	append(&status, Piece{l = "spk", r = spk_mark, rc = spk_col, pri = 1})
+	append(&status, Piece{l = "desk", r = desk_mark, rc = desk_col, pri = 2})
+	append(&status, Piece{l = "scr", r = scr_mark, rc = scr_col, pri = 2})
 	append(&status, Piece{r = level_bar(int(sync.atomic_load(&rx_level))), rc = C_GREEN, pri = 2})
 	append(&status, Piece{r = backend, rc = C_DIM, pri = 3})
 	append(&status, Piece{r = tprintf("%dc", colors_now()), rc = C_DIM, pri = 3})
 	append(&status, Piece{
-		r = tprintf("tx %d rx %d", sync.atomic_load(&tx_audio_n), sync.atomic_load(&rx_audio_n)),
+		r = tprintf("tx %d rx %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)),
 		rc = C_DIM,
 		pri = 4,
 	})
@@ -199,11 +203,13 @@ footer_draw :: proc(b: ^FB, backend: string) {
 	append(&keys, Piece{l = "m", r = "spk", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 2})
 	append(&keys, Piece{l = "n", r = "mic", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 3})
 	append(&keys, Piece{l = "c", r = "cam", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 4})
-	append(&keys, Piece{l = "d", r = "devices", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 5})
-	append(&keys, Piece{l = "f", r = "layout", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
-	append(&keys, Piece{l = "h", r = "mirror", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
-	append(&keys, Piece{l = "j/k", r = "colors", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 8})
-	append(&keys, Piece{l = "Tab ←/→", r = "pick", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 9})
+	append(&keys, Piece{l = "a", r = "desk", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 5})
+	append(&keys, Piece{l = "s", r = "screen", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
+	append(&keys, Piece{l = "d", r = "devices", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
+	append(&keys, Piece{l = "f", r = "layout", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 8})
+	append(&keys, Piece{l = "h", r = "mirror", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 9})
+	append(&keys, Piece{l = "j/k", r = "colors", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 10})
+	append(&keys, Piece{l = "Tab ←/→", r = "pick", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 11})
 	append(&keys, Piece{l = "?", r = "help", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 0})
 	row_draw(b, rows, keys[:], cols)
 }
@@ -306,11 +312,13 @@ help_draw :: proc() {
 	b: FB
 	fb_begin(&b)
 	cols, rows := term_size()
-	lines := [15][2]string{
+	lines := [17][2]string{
 		{"", "media"},
 		{"m", "toggle speaker mute"},
 		{"n", "toggle microphone mute"},
 		{"c", "toggle camera send"},
+		{"a", "toggle system audio sharing"},
+		{"s", "toggle screen sharing"},
 		{"d", "pick input output and camera devices"},
 		{"Up/Down", "raise or lower volume"},
 		{"", "layout"},

@@ -238,7 +238,7 @@ func (s *Server) handleJoinProof(body []byte, from netip.AddrPort) {
 		ClientID: m.ID,
 		Members:  r.list(),
 	})
-	s.broadcast(r, protocol.TypeMemberJoin, protocol.MemberJoin{ID: m.ID, Name: m.Name, Cam: m.Cam, Mic: m.Mic}, from)
+	s.broadcast(r, protocol.TypeMemberJoin, protocol.MemberJoin{ID: m.ID, Name: m.Name, Cam: m.Cam, Mic: m.Mic, Screen: m.Screen}, from)
 }
 
 func (s *Server) handleKeepAlive(body []byte, from netip.AddrPort) {
@@ -260,7 +260,8 @@ func (s *Server) handleMemberUpdate(body []byte, from netip.AddrPort) {
 	}
 	m.Cam = req.Cam
 	m.Mic = req.Mic
-	s.broadcast(m.room, protocol.TypeMemberUpdate, protocol.MemberUpdate{ID: m.ID, Cam: m.Cam, Mic: m.Mic}, from)
+	m.Screen = req.Screen
+	s.broadcast(m.room, protocol.TypeMemberUpdate, protocol.MemberUpdate{ID: m.ID, Cam: m.Cam, Mic: m.Mic, Screen: m.Screen}, from)
 }
 
 func (s *Server) handleSubscribe(body []byte, from netip.AddrPort) {

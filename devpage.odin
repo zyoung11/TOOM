@@ -18,6 +18,7 @@ DevEnt :: struct {
 }
 
 dev_lists:  [3][dynamic]DevEnt
+mon_list:   [dynamic]DevEnt
 dev_cur:    [3]int
 dev_sel:    [3]int
 dev_inited: bool
@@ -33,6 +34,15 @@ cstr_dup :: proc(chars: rawptr) -> string {
 		n += 1
 	}
 	return strings.clone(string(buf[:n]))
+}
+
+// id_str views a Pulse device id as a NUL terminated name.
+id_str :: proc(id: ^ma.device_id) -> string {
+	n := 0
+	for n < len(id.pulse) && id.pulse[n] != 0 {
+		n += 1
+	}
+	return string(([^]u8)(&id.pulse[0])[:n])
 }
 
 // id_is_monitor reports whether a device id points at a sink monitor
@@ -84,7 +94,32 @@ audio_enum_devs :: proc(capture: bool) -> [dynamic]DevEnt {
 		if capture && id_is_monitor(&d.id) {
 			continue
 		}
-		append(&out, DevEnt{name = cstr_dup(&d.name[0]), id = d.id})
+		append(&out, DevEnt{name = cstr_dup(&d.name[0]), id = d.id, is_default = bool(d.isDefault)})
+	}
+	return out
+}
+
+// audio_enum_mon lists the sink monitor loopback sources used for
+// system audio sharing.
+audio_enum_mon :: proc() -> [dynamic]DevEnt {
+	out := make([dynamic]DevEnt, 0, 4)
+	ctx: ma.context_type
+	if ma.context_init(nil, 0, nil, &ctx) != .SUCCESS {
+		return out
+	}
+	defer ma.context_uninit(&ctx)
+	pdevs: [^]ma.device_info
+	pcount: u32
+	cdevs: [^]ma.device_info
+	ccount: u32
+	if ma.context_get_devices(&ctx, &pdevs, &pcount, &cdevs, &ccount) != .SUCCESS {
+		return out
+	}
+	for i in 0..<int(ccount) {
+		d := cdevs[i]
+		if id_is_monitor(&d.id) {
+			append(&out, DevEnt{name = cstr_dup(&d.name[0]), id = d.id})
+		}
 	}
 	return out
 }
@@ -119,6 +154,7 @@ dev_init :: proc() {
 	dev_lists[0] = audio_enum_devs(true)
 	dev_lists[1] = audio_enum_devs(false)
 	dev_lists[2] = cam_enum_devs()
+	mon_list = audio_enum_mon()
 	for f in 0..<3 {
 		dev_sel[f] = 0
 		dev_cur[f] = 0
