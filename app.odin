@@ -52,6 +52,8 @@ mic_enabled: bool
 send_video:  i32
 cam_off:     i32
 self_mirror: i32 = 1
+ui_modal:    i32
+audio_swap:  i32
 mir_y:       []u8
 mir_u:       []u8
 mir_v:       []u8
@@ -76,6 +78,9 @@ engine_new :: proc(src_w, src_h: int, t: Tile) -> ^aideo.Engine {
 
 engine_push :: proc(e: ^aideo.Engine, f: YuvFrame) {
 	if e == nil {
+		return
+	}
+	if sync.atomic_load(&ui_modal) != 0 {
 		return
 	}
 	aideo.aideo_push_yuv(e, f.y, f.u, f.v, f.sy, f.sc)
@@ -325,6 +330,80 @@ cam_pipeline_start :: proc() -> bool {
 	return true
 }
 
+// audio_switch restarts the audio devices so newly picked input and
+// output take effect during a meeting.
+audio_switch :: proc() {
+	vol := sync.atomic_load(&spk_vol_bits)
+	sync.atomic_store(&audio_swap, 1)
+	time.sleep(150 * time.Millisecond)
+	audio_stop()
+	audio_start()
+	sync.atomic_store(&spk_vol_bits, vol)
+	sync.atomic_store(&audio_swap, 0)
+}
+
+// cam_switch restarts the camera pipeline so the newly picked device
+// takes effect during a meeting.
+cam_switch :: proc() {
+	off := sync.atomic_load(&cam_off)
+	was_ready := sync.atomic_load(&cam_ready) != 0
+	sync.atomic_store(&cam_ready, 0)
+	sync.atomic_store(&send_video, 0)
+	time.sleep(300 * time.Millisecond)
+	cam_stop(&cam)
+	h264_enc_close(&enc)
+	dec_close(&local_dec)
+	delete(ybuf)
+	delete(ubuf)
+	delete(vbuf)
+	delete(enc_out)
+	delete(mir_y)
+	delete(mir_u)
+	delete(mir_v)
+	ybuf = nil
+	ubuf = nil
+	vbuf = nil
+	enc_out = nil
+	mir_y = nil
+	mir_u = nil
+	mir_v = nil
+	if cam_pipeline_start() {
+		if was_ready && off == 1 {
+			sync.atomic_store(&cam_off, 1)
+		} else {
+			sync.atomic_store(&cam_off, 0)
+			sync.atomic_store(&send_video, 1)
+		}
+		if self_engine != nil {
+			aideo.aideo_close(self_engine)
+			self_engine = nil
+		}
+		layout_apply()
+	}
+	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+}
+
+// dev_modal_run opens the device picker during a meeting, keeps the
+// sixel engines quiet while it is open and applies device changes
+// live.
+dev_modal_run :: proc() {
+	in_sel := dev_sel[0]
+	out_sel := dev_sel[1]
+	old_cam := cam_dev
+	sync.atomic_store(&ui_modal, 1)
+	time.sleep(60 * time.Millisecond)
+	dev_run()
+	sync.atomic_store(&ui_modal, 0)
+	if dev_sel[0] != in_sel || dev_sel[1] != out_sel {
+		audio_switch()
+	}
+	if cam_dev != old_cam {
+		cam_switch()
+	}
+	screen_clear()
+	engines_repaint()
+}
+
 capture_thread :: proc() {
 	interval := time.Duration(i64(time.Second) / i64(max(app_fps, 1)))
 	last: time.Time
@@ -387,6 +466,9 @@ audio_tx_thread :: proc() {
 	seq: u32
 	for sync.atomic_load(&app_stop) == 0 {
 		time.sleep(5 * time.Millisecond)
+		if sync.atomic_load(&audio_swap) != 0 {
+			continue
+		}
 		if !audio_ok || audio_capture_fill() < AUDIO_BLOCK {
 			continue
 		}
@@ -423,6 +505,9 @@ mix_thread :: proc() {
 	keep := 0
 	for sync.atomic_load(&app_stop) == 0 {
 		time.sleep(20 * time.Millisecond)
+		if sync.atomic_load(&audio_swap) != 0 {
+			continue
+		}
 		keep += 1
 		if keep >= 100 {
 			keep = 0
@@ -624,8 +709,12 @@ conf_key :: proc(k: Key) -> bool {
 				colors_apply()
 			}
 		case '?':
+			sync.atomic_store(&ui_modal, 1)
+			time.sleep(60 * time.Millisecond)
 			help_open = true
 			help_draw()
+		case 'd', 'D':
+			dev_modal_run()
 		}
 	}
 	return false
@@ -714,6 +803,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 		if k.kind != .None {
 			if help_open {
 				help_open = false
+				sync.atomic_store(&ui_modal, 0)
 				screen_clear()
 				engines_repaint()
 				continue

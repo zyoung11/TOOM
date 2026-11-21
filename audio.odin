@@ -216,6 +216,7 @@ audio_start :: proc() -> bool {
 	pcfg.sampleRate = AUDIO_RATE
 	pcfg.periodSizeInMilliseconds = 20
 	pcfg.dataCallback = pb_cb
+	sync.atomic_store(&pb_primed, 0)
 	if ma.device_init(&audio_ctx, &pcfg, &pb_dev) != .SUCCESS {
 		ma.device_uninit(&cap_dev)
 		ma.context_uninit(&audio_ctx)
