@@ -167,7 +167,7 @@ card_draw :: proc(b: ^FB) {
 	fb_str(b, conf_code_tail)
 	fb_at(b, t.row + 4, t.col + 2)
 	fb_fg(b, C_DIM)
-	fb_str(b, tprintf("tx %d  rx %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)))
+	fb_str(b, tprintf("↑ %d  ↓ %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)))
 	fb_reset(b)
 }
 

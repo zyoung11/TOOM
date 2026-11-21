@@ -578,7 +578,7 @@ capture_thread :: proc() {
 					}
 					seq += 1
 					sess_send_frame(&sess, MEDIA_STREAM_VIDEO, flags, seq, ms_now(), enc_out[:n])
-					sync.atomic_store(&tx_media_n, sync.atomic_load(&tx_media_n) + 1)
+					sync.atomic_add(&tx_media_n, 1)
 				}
 			}
 		}
@@ -621,7 +621,7 @@ audio_tx_thread :: proc() {
 		if n > 0 {
 			seq += 1
 			sess_send_frame(&sess, MEDIA_STREAM_AUDIO, 0, seq, ms_now(), out[:n])
-			sync.atomic_store(&tx_media_n, sync.atomic_load(&tx_media_n) + 1)
+			sync.atomic_add(&tx_media_n, 1)
 		}
 	}
 }
@@ -671,6 +671,7 @@ desk_tx_thread :: proc() {
 		if n > 0 {
 			seq += 1
 			sess_send_frame(&sess, MEDIA_STREAM_DESK, 0, seq, ms_now(), out[:n])
+			sync.atomic_add(&tx_media_n, 1)
 		}
 	}
 }
@@ -967,7 +968,7 @@ screen_tx_thread :: proc() {
 			}
 			seq += 1
 			sess_send_frame(&sess, MEDIA_STREAM_SCREEN, flags, seq, ms_now(), out[:n])
-			sync.atomic_store(&tx_media_n, sync.atomic_load(&tx_media_n) + 1)
+			sync.atomic_add(&tx_media_n, 1)
 		}
 	}
 }
@@ -1126,13 +1127,13 @@ route_media :: proc(blob: []u8) {
 	if done {
 		if h.stream == MEDIA_STREAM_VIDEO {
 			f, ok2 := dec_feed(&p.vdec, frame)
-			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
+			sync.atomic_add(&rx_media_n, 1)
 			if ok2 {
 				video_frame(p, f)
 			}
 		} else if h.stream == MEDIA_STREAM_SCREEN {
 			f, ok2 := dec_feed(&p.screen_dec, frame)
-			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
+			sync.atomic_add(&rx_media_n, 1)
 			if ok2 {
 				if screen_owner == 0 {
 					screen_set_owner(h.src)
@@ -1140,10 +1141,10 @@ route_media :: proc(blob: []u8) {
 				screen_frame_in(p, f)
 			}
 		} else if h.stream == MEDIA_STREAM_DESK {
-			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
+			sync.atomic_add(&rx_media_n, 1)
 			desk_block(p, frame)
 		} else {
-			sync.atomic_store(&rx_media_n, sync.atomic_load(&rx_media_n) + 1)
+			sync.atomic_add(&rx_media_n, 1)
 			audio_block(p, frame)
 		}
 	}
