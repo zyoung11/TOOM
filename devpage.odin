@@ -35,8 +35,29 @@ cstr_dup :: proc(chars: rawptr) -> string {
 	return strings.clone(string(buf[:n]))
 }
 
+// id_is_monitor reports whether a device id points at a sink monitor
+// loopback source. Pulse monitor sources end with ".monitor".
+id_is_monitor :: proc(id: ^ma.device_id) -> bool {
+	suffix := ".monitor"
+	s := id.pulse[:]
+	n := 0
+	for n < len(s) && s[n] != 0 {
+		n += 1
+	}
+	if n < len(suffix) {
+		return false
+	}
+	for i in 0..<len(suffix) {
+		if s[n - len(suffix) + i] != c.char(suffix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // audio_enum_devs lists the audio devices of one direction. The first
-// entry is always the system default.
+// entry is always the system default. Capture lists hide the sink
+// monitor loopback sources.
 audio_enum_devs :: proc(capture: bool) -> [dynamic]DevEnt {
 	out := make([dynamic]DevEnt, 0, 8)
 	append(&out, DevEnt{name = "System default", is_default = true})
@@ -60,6 +81,9 @@ audio_enum_devs :: proc(capture: bool) -> [dynamic]DevEnt {
 	}
 	for i in 0..<n {
 		d := list[i]
+		if capture && id_is_monitor(&d.id) {
+			continue
+		}
 		append(&out, DevEnt{name = cstr_dup(&d.name[0]), id = d.id})
 	}
 	return out

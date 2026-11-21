@@ -2,7 +2,7 @@ package toom
 
 import "base:runtime"
 import "core:c"
-import "core:os"
+import "core:strings"
 import aideo "../Aideo"
 import "core:thread"
 import "core:sync"
@@ -47,7 +47,7 @@ self_engine: ^aideo.Engine
 self_tile:   Tile
 self_w:      int
 self_h:      int
-cam_enabled: bool
+cam_ready:   i32
 mic_enabled: bool
 send_video:  i32
 cam_off:     i32
@@ -64,9 +64,9 @@ engine_new :: proc(src_w, src_h: int, t: Tile) -> ^aideo.Engine {
 	cfg.src_h = c.int(src_h)
 	cfg.out_w = c.int(t.w)
 	cfg.out_h = c.int(t.h)
-	cfg.colors = 64
-	cfg.origin_row = c.int(t.row)
-	cfg.origin_col = c.int(t.col)
+	cfg.colors = c.int(colors_now())
+	cfg.origin_row = c.int(t.prow)
+	cfg.origin_col = c.int(t.pcol)
 	return aideo.aideo_open(&cfg)
 }
 
@@ -77,15 +77,15 @@ engine_push :: proc(e: ^aideo.Engine, f: YuvFrame) {
 	aideo.aideo_push_yuv(e, f.y, f.u, f.v, f.sy, f.sc)
 }
 
-// layout_apply recomputes the tile grid and moves every engine.
-layout_apply :: proc() {
+// peer_ids_sorted returns the display order: self first, then peers
+// by rising id.
+peer_ids_sorted :: proc() -> [dynamic]u32 {
 	sync.mutex_lock(&peer_mu)
 	ids := make([dynamic]u32, 0, len(peers))
 	for id in peers {
 		append(&ids, id)
 	}
 	sync.mutex_unlock(&peer_mu)
-	defer delete(ids)
 	for i in 0..<len(ids) {
 		for j := i + 1; j < len(ids); j += 1 {
 			if ids[j] < ids[i] {
@@ -93,11 +93,104 @@ layout_apply :: proc() {
 			}
 		}
 	}
-	tiles := layout_compute(1 + len(ids), self_w, self_h)
-	defer delete(tiles)
-	self_tile = tiles[0]
+	return ids
+}
+
+// peer_count returns the number of remote members.
+peer_count :: proc() -> int {
+	sync.mutex_lock(&peer_mu)
+	defer sync.mutex_unlock(&peer_mu)
+	return len(peers)
+}
+
+// engines_repaint forces every engine to redraw its next frame in
+// full, for example after the screen was cleared.
+engines_repaint :: proc() {
 	if self_engine != nil {
-		aideo.aideo_resize(self_engine, c.int(self_tile.w), c.int(self_tile.h), c.int(self_tile.row), c.int(self_tile.col))
+		aideo.aideo_repaint(self_engine)
+	}
+	sync.mutex_lock(&peer_mu)
+	for _, p in peers {
+		if p.engine != nil {
+			aideo.aideo_repaint(p.engine)
+		}
+	}
+	sync.mutex_unlock(&peer_mu)
+}
+
+// colors_apply pushes the selected palette size to every engine.
+colors_apply :: proc() {
+	colors := c.int(colors_now())
+	if self_engine != nil {
+		aideo.aideo_set_colors(self_engine, colors)
+	}
+	sync.mutex_lock(&peer_mu)
+	for _, p in peers {
+		if p.engine != nil {
+			aideo.aideo_set_colors(p.engine, colors)
+		}
+	}
+	sync.mutex_unlock(&peer_mu)
+}
+
+// layout_apply recomputes the tiles for the current mode and rebuilds
+// every engine whose picture rect moved. The screen is cleared once
+// per layout change instead of once per engine.
+layout_apply :: proc() {
+	ids := peer_ids_sorted()
+	defer delete(ids)
+	n := 1 + len(ids)
+	if conf_focus >= n {
+		conf_focus = 0
+	}
+	tiles: []Tile
+	card: Tile
+	has_card: bool
+	if conf_mode == .Grid {
+		tiles, card, has_card = layout_grid(n, self_w, self_h)
+	} else {
+		tiles = layout_focus(n, conf_focus, self_w, self_h)
+	}
+	if len(tiles) == 0 {
+		sync.atomic_store(&layout_dirty, 0)
+		return
+	}
+	for i in 0..<n {
+		src_w, src_h := self_w, self_h
+		if i > 0 {
+			p := peer_get(ids[i - 1])
+			if p != nil && p.src_w > 0 {
+				src_w, src_h = p.src_w, p.src_h
+			}
+		}
+		tile_fit(&tiles[i], src_w, src_h)
+	}
+	moved := len(conf_tiles) != n
+	for i in 0..<min(len(conf_tiles), n) {
+		a := conf_tiles[i]
+		b := tiles[i]
+		if a.prow != b.prow || a.pcol != b.pcol || a.w != b.w || a.h != b.h {
+			moved = true
+		}
+	}
+	if moved {
+		screen_clear()
+		if self_engine != nil {
+			aideo.aideo_close(self_engine)
+			self_engine = nil
+		}
+		sync.mutex_lock(&peer_mu)
+		for _, p in peers {
+			if p.engine != nil {
+				aideo.aideo_close(p.engine)
+				p.engine = nil
+			}
+		}
+		sync.mutex_unlock(&peer_mu)
+	}
+	self_tile = tiles[0]
+	if self_engine == nil {
+		self_engine = engine_new(self_w, self_h, self_tile)
 	}
 	sync.mutex_lock(&peer_mu)
 	for id, i in ids {
@@ -107,15 +200,18 @@ layout_apply :: proc() {
 		}
 		p.tile = tiles[i + 1]
 		p.has_tile = true
-		if p.engine != nil {
-			aideo.aideo_resize(p.engine, c.int(p.tile.w), c.int(p.tile.h), c.int(p.tile.row), c.int(p.tile.col))
+		if p.engine == nil && p.src_w > 0 {
+			p.engine = engine_new(p.src_w, p.src_h, p.tile)
 		}
 	}
 	sync.mutex_unlock(&peer_mu)
+	delete(conf_tiles)
+	conf_tiles = tiles
+	conf_card = card
+	conf_has_card = has_card
 	sync.atomic_store(&layout_dirty, 0)
 }
 
-// status_draw paints the bottom status line.
 // level_bar renders one audio level as a 4 step bar.
 level_bar :: proc(v: int) -> string {
 	steps := v * 4 / 32767
@@ -124,58 +220,6 @@ level_bar :: proc(v: int) -> string {
 	}
 	chars := [5]string{"    ", "▁   ", "▃▂  ", "▅▄▂ ", "█▇▆▃"}
 	return chars[steps]
-}
-
-status_draw :: proc(backend: string) {
-	cols, rows := term_size()
-	sync.mutex_lock(&peer_mu)
-	n := len(peers)
-	sync.mutex_unlock(&peer_mu)
-	cam_s := "off"
-	if cam_enabled && sync.atomic_load(&send_video) != 0 {
-		cam_s = "on"
-	}
-	mic_s := "off"
-	if mic_enabled {
-		mic_s = "on"
-	}
-	spk_s := "on"
-	if sync.atomic_load(&spk_mute) != 0 {
-		spk_s = "muted"
-	}
-	line := tprintf("Room %s   Members %d   Camera %s   Mic %s %s   Audio %s %s   pkt tx %d rx %d   Encoder %s   q quit   m mute   n mic   c cam   Up/Down volume",
-		sess.room, n + 1, cam_s, mic_s, level_bar(int(sync.atomic_load(&cap_level))), spk_s,
-		level_bar(int(sync.atomic_load(&rx_level))), sync.atomic_load(&tx_audio_n), sync.atomic_load(&rx_audio_n), backend)
-	put_fill(rows, 1, cols, -1)
-	put_text(rows, 1, line, C_TEXT, -1, false)
-}
-
-// label_draw paints each tile caption over the picture bottom rows.
-label_draw :: proc() {
-	cols, _ := term_size()
-	cw, ch := term_cell_pixels()
-	draw_one := proc(t: Tile, name: string, muted: bool, cw, ch: int) {
-		label_row := t.row + (t.h + ch - 1) / ch - 1
-		if label_row < 1 {
-			return
-		}
-		width_cells := (t.w + cw - 1) / cw
-		put_fill(label_row, t.col, width_cells, -1)
-		mark := ""
-		if muted {
-			mark = " [muted]"
-		}
-		put_text(label_row, t.col + 1, tprintf("%s%s", name, mark), C_TEXT, -1, true)
-	}
-	_ = cols
-	draw_one(self_tile, tprintf("%s (me)", sess.name), sync.atomic_load(&mic_mute) != 0, cw, ch)
-	sync.mutex_lock(&peer_mu)
-	for _, p in peers {
-		if p.has_tile {
-			draw_one(p.tile, p.info.name, !p.info.mic, cw, ch)
-		}
-	}
-	sync.mutex_unlock(&peer_mu)
 }
 
 peer_add :: proc(info: PeerInfo) {
@@ -206,6 +250,7 @@ peer_remove :: proc(id: u32) {
 	}
 	dec_close(&p.vdec)
 	opus_dec_close(&p.adec)
+	delete(p.jb.data)
 	free(p)
 	sync.atomic_store(&layout_dirty, 1)
 }
@@ -216,17 +261,18 @@ peer_get :: proc(id: u32) -> ^PeerRT {
 	return peers[id]
 }
 
-// video_frame routes one decoded remote frame into the peer engine.
+// video_frame routes one decoded remote frame into the peer engine,
+// refitting the tile when the source size changes.
 video_frame :: proc(p: ^PeerRT, f: YuvFrame) {
 	if p.engine == nil || p.src_w != f.w || p.src_h != f.h {
-		if p.engine != nil {
-			aideo.aideo_close(p.engine)
-			p.engine = nil
-		}
 		p.src_w = f.w
 		p.src_h = f.h
 		if !p.has_tile {
 			return
+		}
+		tile_fit(&p.tile, f.w, f.h)
+		if p.engine != nil {
+			aideo.aideo_close(p.engine)
 		}
 		p.engine = engine_new(f.w, f.h, p.tile)
 	}
@@ -245,12 +291,43 @@ audio_block :: proc(p: ^PeerRT, data: []u8) {
 	sync.mutex_unlock(&p.jb_mu)
 }
 
+// cam_pipeline_start opens the camera, the conversion buffers and the
+// encoder so the meeting can send video. It reports whether the
+// pipeline is ready.
+cam_pipeline_start :: proc() -> bool {
+	if sync.atomic_load(&cam_ready) != 0 {
+		return true
+	}
+	if !cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
+		return false
+	}
+	self_w = cam.w
+	self_h = cam.h
+	ybuf = make([]u8, self_w * self_h)
+	ubuf = make([]u8, self_w * self_h / 4)
+	vbuf = make([]u8, self_w * self_h / 4)
+	enc_out = make([]u8, 1 << 20)
+	if cam.fmt == CAM_MJPG {
+		_ = dec_open(&local_dec, "mjpeg")
+	}
+	if !h264_enc_open(&enc, self_w, self_h, app_fps, enc_kbps, enc_prefer) {
+		cam_stop(&cam)
+		return false
+	}
+	sync.atomic_store(&cam_ready, 1)
+	return true
+}
+
 capture_thread :: proc() {
 	interval := time.Duration(i64(time.Second) / i64(max(app_fps, 1)))
 	last: time.Time
 	first := true
 	seq: u32
 	for sync.atomic_load(&app_stop) == 0 {
+		if sync.atomic_load(&cam_ready) == 0 {
+			time.sleep(50 * time.Millisecond)
+			continue
+		}
 		data, ok := cam_grab(&cam, 200)
 		if !ok {
 			continue
@@ -303,6 +380,9 @@ audio_tx_thread :: proc() {
 			continue
 		}
 		audio_capture_pop(pcm[:])
+		if sync.atomic_load(&mic_mute) != 0 {
+			continue
+		}
 		peak := 0
 		for i in 0..<AUDIO_BLOCK {
 			v := int(pcm[i])
@@ -314,11 +394,6 @@ audio_tx_thread :: proc() {
 			}
 		}
 		level_store(&mic_level, peak)
-		if sync.atomic_load(&mic_mute) != 0 {
-			for i in 0..<AUDIO_BLOCK {
-				pcm[i] = 0
-			}
-		}
 		n := opus_enc_encode(&audio_enc, pcm[:], out[:])
 		if n > 0 {
 			seq += 1
@@ -457,6 +532,87 @@ ms_now :: proc() -> u32 {
 
 epoch: time.Time
 
+// conf_key applies one meeting key. It returns true when the user
+// confirmed the quit.
+conf_key :: proc(k: Key) -> bool {
+	quit_key := k.kind == .Quit || (k.kind == .Char && (k.ch == 'q' || k.ch == 'Q'))
+	if quit_key {
+		if quit_armed() {
+			return true
+		}
+		quit_on = true
+		quit_at = time.now()
+		return false
+	}
+	quit_on = false
+	#partial switch k.kind {
+	case .Up:
+		audio_vol_add(0.1)
+	case .Down:
+		audio_vol_add(-0.1)
+	case .Tab, .Left, .Right:
+		dir := 1
+		if k.kind == .Left {
+			dir = -1
+		}
+		n := 1 + peer_count()
+		conf_focus = ((conf_focus + dir) % n + n) % n
+		if conf_mode == .Focus {
+			layout_apply()
+		}
+	case .FocusIn:
+		engines_repaint()
+	case .Char:
+		switch k.ch {
+		case 'm', 'M':
+			audio_toggle_spk()
+		case 'n', 'N':
+			audio_toggle_mic()
+			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+		case 'c', 'C':
+			if sync.atomic_load(&cam_ready) != 0 {
+				off := 1 - sync.atomic_load(&cam_off)
+				sync.atomic_store(&cam_off, off)
+				sync.atomic_store(&send_video, 1 - off)
+				if off == 1 {
+					screen_clear()
+					engines_repaint()
+				}
+			} else if cam_pipeline_start() {
+				sync.atomic_store(&cam_off, 0)
+				sync.atomic_store(&send_video, 1)
+				if self_engine != nil {
+					aideo.aideo_close(self_engine)
+					self_engine = nil
+				}
+				layout_apply()
+			}
+			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
+		case 'f', 'F':
+			if conf_mode == .Grid {
+				conf_mode = .Focus
+			} else {
+				conf_mode = .Grid
+			}
+			layout_apply()
+		case 'j', 'J':
+			if color_idx > 0 {
+				color_idx -= 1
+				colors_apply()
+			}
+		case 'k', 'K':
+			if color_idx < len(CONF_COLORS) - 1 {
+				color_idx += 1
+				colors_apply()
+			}
+		case '?':
+			help_open = true
+			help_draw()
+		}
+	}
+	return false
+}
+
 // conference_run drives one call from join to hangup. It returns an
 // empty string on a clean exit or the failure reason.
 conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_on: bool) -> string {
@@ -489,105 +645,82 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	}
 	sync.mutex_unlock(&sess.peer_mu)
 
-	cam_enabled = cam_on
-	mic_enabled = mic_on
 	self_w = cam_w_req
 	self_h = cam_h_req
+	sync.atomic_store(&cam_ready, 0)
+	sync.atomic_store(&cam_off, 1)
 	sync.atomic_store(&send_video, 0)
-
-	if cam_enabled {
-		if cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
-			self_w = cam.w
-			self_h = cam.h
-			ybuf = make([]u8, self_w * self_h)
-			ubuf = make([]u8, self_w * self_h / 4)
-			vbuf = make([]u8, self_w * self_h / 4)
-			enc_out = make([]u8, 1 << 20)
-			if cam.fmt == CAM_MJPG {
-				_ = dec_open(&local_dec, "mjpeg")
-			}
-			if h264_enc_open(&enc, self_w, self_h, app_fps, enc_kbps, enc_prefer) {
-				sync.atomic_store(&send_video, 1)
-			} else {
-				cam_stop(&cam)
-				cam_enabled = false
-			}
-		} else {
-			cam_enabled = false
-		}
+	sync.atomic_store(&tx_audio_n, 0)
+	sync.atomic_store(&rx_audio_n, 0)
+	if cam_on && cam_pipeline_start() {
+		sync.atomic_store(&cam_off, 0)
+		sync.atomic_store(&send_video, 1)
 	}
-	if !audio_start() {
+	if audio_start() && opus_enc_open(&audio_enc, 24000) {
+		mic_enabled = true
+	} else {
 		mic_enabled = false
 	}
-	if mic_enabled {
-		if !opus_enc_open(&audio_enc, 24000) {
-			mic_enabled = false
-		}
+	if mic_on {
+		sync.atomic_store(&mic_mute, 0)
+	} else {
+		sync.atomic_store(&mic_mute, 1)
 	}
-	sess_update(&sess, sync.atomic_load(&send_video) != 0, mic_enabled)
+	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
 
 	screen_clear()
-	self_engine = engine_new(self_w, self_h, Tile{row = 1, col = 1, w = 64, h = 48})
+	self_engine = nil
+	self_tile = Tile{}
+	conf_focus = 0
+	if conf_code_tail != "" {
+		delete(conf_code_tail)
+	}
+	code := meeting_encode(server, room, secret)
+	conf_code_tail = strings.clone(code[len(code) - 4:])
+	delete(code)
 	layout_apply()
 
-	t_cap: ^thread.Thread
 	t_atx: ^thread.Thread
 	t_rx := thread.create_and_start(rx_thread)
 	t_mix := thread.create_and_start(mix_thread)
-	if cam_enabled {
-		t_cap = thread.create_and_start(capture_thread)
-	}
+	t_cap := thread.create_and_start(capture_thread)
 	if mic_enabled {
 		t_atx = thread.create_and_start(audio_tx_thread)
 	}
 
-	backend := "无"
-	if cam_enabled {
-		backend = h264_enc_backend(&enc)
-	}
 	last_ui: time.Time
 	for sync.atomic_load(&app_stop) == 0 {
 		tmp := runtime.default_temp_allocator_temp_begin()
 		defer runtime.default_temp_allocator_temp_end(tmp)
 		k := key_next()
-		#partial switch k.kind {
-		case .Quit:
-			sync.atomic_store(&app_stop, 1)
-		case .Up:
-			audio_vol_add(0.1)
-		case .Down:
-			audio_vol_add(-0.1)
-		case .Char:
-			switch k.ch {
-			case 'q', 'Q':
+		if k.kind != .None {
+			if help_open {
+				help_open = false
+				screen_clear()
+				engines_repaint()
+				continue
+			}
+			if conf_key(k) {
 				sync.atomic_store(&app_stop, 1)
-			case 'm', 'M':
-				audio_toggle_spk()
-			case 'n', 'N':
-				audio_toggle_mic()
-				sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0)
-			case 'c', 'C':
-				if cam_enabled {
-					off := 1 - sync.atomic_load(&cam_off)
-					sync.atomic_store(&cam_off, off)
-					sync.atomic_store(&send_video, 1 - off)
-					if off == 1 {
-						aideo.aideo_clear(self_engine)
-					}
-					sess_update(&sess, off == 0, sync.atomic_load(&mic_mute) == 0)
-				}
 			}
 		}
 		if term_take_winch() {
-			sync.atomic_store(&layout_dirty, 1)
+			if help_open {
+				help_draw()
+			} else {
+				sync.atomic_store(&layout_dirty, 1)
+			}
 		}
 		if sync.atomic_load(&layout_dirty) != 0 {
 			layout_apply()
 		}
-		if time.since(last_ui) >= 500 * time.Millisecond {
+		if !help_open && time.since(last_ui) >= 200 * time.Millisecond {
 			last_ui = time.now()
-			status_draw(backend)
-			label_draw()
+			backend := "no cam"
+			if sync.atomic_load(&cam_ready) != 0 {
+				backend = h264_enc_backend(&enc)
+			}
+			conf_draw(backend)
 		}
 	}
 
@@ -610,6 +743,11 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	for id in ids {
 		peer_remove(id)
 	}
+	delete(conf_tiles)
+	conf_tiles = nil
+	conf_has_card = false
+	quit_on = false
+	help_open = false
 	if self_engine != nil {
 		aideo.aideo_close(self_engine)
 		self_engine = nil
@@ -623,6 +761,10 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	delete(ubuf)
 	delete(vbuf)
 	delete(enc_out)
+	ybuf = nil
+	ubuf = nil
+	vbuf = nil
+	enc_out = nil
 	sync.atomic_store(&app_stop, 0)
 	return ""
 }

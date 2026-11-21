@@ -89,6 +89,11 @@ fb_begin :: proc(b: ^FB) {
 	fb_str(b, "\x1b[?2026h\x1b[2J\x1b[H")
 }
 
+// fb_keep opens one atomic frame without clearing the screen.
+fb_keep :: proc(b: ^FB) {
+	fb_str(b, "\x1b[?2026h")
+}
+
 // fb_end closes the atomic frame and flushes it.
 fb_end :: proc(b: ^FB) {
 	fb_str(b, "\x1b[?2026l")

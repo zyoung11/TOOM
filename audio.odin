@@ -60,6 +60,7 @@ RingBuf :: struct {
 }
 
 ring_init :: proc(rb: ^RingBuf, frames: int) {
+	delete(rb.data)
 	rb.cap = frames
 	rb.data = make([]i16, frames)
 	rb.head = 0

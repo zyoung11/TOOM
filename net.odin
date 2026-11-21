@@ -154,6 +154,9 @@ sess_init :: proc(s: ^Session, fd: int, srv: SockAddr, room, name: string, secre
 	s.name = name
 	s.join_key = derive_join_key(secret)
 	s.media_key = derive_media_key(secret)
+	if s.peers != nil {
+		delete(s.peers)
+	}
 	s.peers = make(map[u32]PeerInfo)
 }
 

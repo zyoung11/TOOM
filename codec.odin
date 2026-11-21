@@ -163,6 +163,7 @@ dec_close :: proc(d: ^Dec) {
 	delete(d.y)
 	delete(d.u)
 	delete(d.v)
+	d^ = {}
 }
 
 // yuyv_to_i420 converts one packed YUYV frame into I420 planes with
