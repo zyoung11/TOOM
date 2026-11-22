@@ -105,8 +105,8 @@ caps_draw :: proc(b: ^FB) {
 conf_caption :: proc(b: ^FB, info: CapInfo) {
 	cols, _ := term_size()
 	row := info.t.cap
-	left := info.t.col
-	width := min(info.t.bw, cols - left + 1)
+	left := info.t.pcol
+	width := min(info.t.bw - (info.t.pcol - info.t.col), cols - left + 1)
 	if row < 1 || width < 2 {
 		return
 	}
