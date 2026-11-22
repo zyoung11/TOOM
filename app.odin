@@ -991,7 +991,14 @@ share_menu_run :: proc() {
 
 // screen_pipeline_start opens the screen capture so the meeting can
 // send the desktop picture or one application window.
+// screen_mu serializes the screen capture pipeline against the tx
+// thread so stop and start never race with polling, scaling or
+// encoding.
+screen_mu: sync.Mutex
+
 screen_pipeline_start :: proc() -> bool {
+	sync.mutex_lock(&screen_mu)
+	defer sync.mutex_unlock(&screen_mu)
 	if sync.atomic_load(&screen_ready) != 0 {
 		return true
 	}
@@ -1042,6 +1049,13 @@ screen_teardown :: proc() {
 // screen_stop closes the screen capture pipeline and schedules a
 // layout pass so the share tile never survives as a stale region.
 screen_stop :: proc() {
+	sync.mutex_lock(&screen_mu)
+	screen_stop_locked()
+	sync.mutex_unlock(&screen_mu)
+}
+
+// screen_stop_locked tears the pipeline down while screen_mu is held.
+screen_stop_locked :: proc() {
 	sync.atomic_store(&screen_send, 0)
 	sync.atomic_store(&screen_ready, 0)
 	screen_close(&screen_cap)
@@ -1064,6 +1078,81 @@ screen_setup :: proc(w, h: int) {
 
 // screen_tx_thread captures the desktop, encodes it and sends the
 // stream to the room.
+// screen_tx_once polls one frame and sends it under screen_mu. It
+// returns false when the pipeline failed and must be stopped.
+screen_tx_once :: proc(out: []u8, last: ^time.Time, first: ^bool, seq: ^u32) -> bool {
+	if sync.atomic_load(&screen_ready) == 0 || sync.atomic_load(&screen_send) == 0 {
+		return true
+	}
+	if share_window != 0 {
+		w, _, alive := win_track(share_window)
+		if !alive {
+			sync.atomic_store(&win_lost, 1)
+			return false
+		}
+		if w.rect.w > 0 && w.rect.h > 0 {
+			screen_set_region(&screen_cap, w.rect.x, w.rect.y, w.rect.w, w.rect.h)
+		}
+	}
+	r := screen_poll(&screen_cap, 100)
+	if r < 0 {
+		return false
+	}
+	if r == 0 {
+		return true
+	}
+	w, h, stride, yinv := 0, 0, 0, 0
+	data := screen_frame(&screen_cap, &w, &h, &stride, &yinv)
+	if data == nil {
+		return true
+	}
+	now := time.now()
+	if !first^ && time.since(last^) < 66 * time.Millisecond {
+		return true
+	}
+	first^ = false
+	last^ = now
+	if screen_sw != w || screen_sh != h || screen_sws == nil {
+		screen_setup(w, h)
+		sync.atomic_store(&layout_dirty, 1)
+	}
+	srcp := raw_data(data)
+	sstride := c.int(stride)
+	if yinv != 0 {
+		srcp = ([^]u8)(&data[(h - 1) * stride])
+		sstride = -sstride
+	}
+	srcData: [4][^]u8
+	srcStride: [4]c.int
+	dstData: [4][^]u8
+	dstStride: [4]c.int
+	srcData[0] = srcp
+	srcStride[0] = sstride
+	dstData[0] = raw_data(screen_y)
+	dstData[1] = raw_data(screen_u)
+	dstData[2] = raw_data(screen_v)
+	dstStride[0] = c.int(w)
+	dstStride[1] = c.int(w / 2)
+	dstStride[2] = c.int(w / 2)
+	sws_scale(screen_sws, &srcData, &srcStride, 0, c.int(h), &dstData, &dstStride)
+	f := YuvFrame{
+		y = raw_data(screen_y), u = raw_data(screen_u), v = raw_data(screen_v),
+		sy = c.int(w), sc = c.int(w / 2), w = w, h = h,
+	}
+	screen_preview(f)
+	n, key := h264_enc_encode(&screen_enc, f, out)
+	if n > 0 {
+		flags := u8(0)
+		if key {
+			flags = MEDIA_FLAG_KEY
+		}
+		seq^ += 1
+		sess_send_frame(&sess, MEDIA_STREAM_SCREEN, flags, seq^, ms_now(), out[:n])
+		sync.atomic_add(&tx_media_n, 1)
+	}
+	return true
+}
+
 screen_tx_thread :: proc() {
 	out := make([]u8, 1 << 21)
 	defer delete(out)
@@ -1072,76 +1161,11 @@ screen_tx_thread :: proc() {
 	seq: u32
 	for sync.atomic_load(&app_stop) == 0 {
 		time.sleep(5 * time.Millisecond)
-		if sync.atomic_load(&screen_ready) == 0 || sync.atomic_load(&screen_send) == 0 {
-			continue
-		}
-		if share_window != 0 {
-			w, _, alive := win_track(share_window)
-			if !alive {
-				sync.atomic_store(&win_lost, 1)
-				screen_stop()
-				continue
-			}
-			if w.rect.w > 0 && w.rect.h > 0 {
-				screen_set_region(&screen_cap, w.rect.x, w.rect.y, w.rect.w, w.rect.h)
-			}
-		}
-		r := screen_poll(&screen_cap, 100)
-		if r < 0 {
+		sync.mutex_lock(&screen_mu)
+		ok := screen_tx_once(out, &last, &first, &seq)
+		sync.mutex_unlock(&screen_mu)
+		if !ok {
 			screen_stop()
-			continue
-		}
-		if r == 0 {
-			continue
-		}
-		w, h, stride, yinv := 0, 0, 0, 0
-		data := screen_frame(&screen_cap, &w, &h, &stride, &yinv)
-		if data == nil {
-			continue
-		}
-		now := time.now()
-		if !first && time.since(last) < 66 * time.Millisecond {
-			continue
-		}
-		first = false
-		last = now
-		if screen_sw != w || screen_sh != h || screen_sws == nil {
-			screen_setup(w, h)
-			sync.atomic_store(&layout_dirty, 1)
-		}
-		srcp := raw_data(data)
-		sstride := c.int(stride)
-		if yinv != 0 {
-			srcp = ([^]u8)(&data[(h - 1) * stride])
-			sstride = -sstride
-		}
-		srcData: [4][^]u8
-		srcStride: [4]c.int
-		dstData: [4][^]u8
-		dstStride: [4]c.int
-		srcData[0] = srcp
-		srcStride[0] = sstride
-		dstData[0] = raw_data(screen_y)
-		dstData[1] = raw_data(screen_u)
-		dstData[2] = raw_data(screen_v)
-		dstStride[0] = c.int(w)
-		dstStride[1] = c.int(w / 2)
-		dstStride[2] = c.int(w / 2)
-		sws_scale(screen_sws, &srcData, &srcStride, 0, c.int(h), &dstData, &dstStride)
-		f := YuvFrame{
-			y = raw_data(screen_y), u = raw_data(screen_u), v = raw_data(screen_v),
-			sy = c.int(w), sc = c.int(w / 2), w = w, h = h,
-		}
-		screen_preview(f)
-		n, key := h264_enc_encode(&screen_enc, f, out)
-		if n > 0 {
-			flags := u8(0)
-			if key {
-				flags = MEDIA_FLAG_KEY
-			}
-			seq += 1
-			sess_send_frame(&sess, MEDIA_STREAM_SCREEN, flags, seq, ms_now(), out[:n])
-			sync.atomic_add(&tx_media_n, 1)
 		}
 	}
 }
