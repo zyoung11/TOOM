@@ -264,12 +264,10 @@ layout_apply :: proc() {
 		conf_focus = 0
 	}
 	tiles: []Tile
-	card: Tile
-	has_card: bool
 	if screen_owner != 0 || screen_local_on() {
 		tiles = layout_focus(n + 1, n, self_w, self_h)
 	} else if conf_mode == .Grid {
-		tiles, card, has_card = layout_grid(n, self_w, self_h)
+		tiles = layout_grid(n, self_w, self_h)
 	} else {
 		tiles = layout_focus(n, conf_focus, self_w, self_h)
 	}
@@ -329,8 +327,6 @@ layout_apply :: proc() {
 	}
 	delete(conf_tiles)
 	conf_tiles = tiles
-	conf_card = card
-	conf_has_card = has_card
 	engines_repaint()
 	sync.atomic_store(&layout_dirty, 0)
 }
@@ -723,10 +719,16 @@ desk_tx_thread :: proc() {
 }
 
 // screen_set_owner tracks which member streams a screen and swaps the
-// layout to the screen arrangement automatically.
+// layout to the screen arrangement automatically. A member whose
+// screen is taken over by a later sharer drops back to the idle state.
 screen_set_owner :: proc(id: u32) {
 	if id == screen_owner {
 		return
+	}
+	if id != 0 && id != sess.self_id && sync.atomic_load(&screen_send) != 0 {
+		screen_stop()
+		toast_show("screen sharing stopped, another member took over", 2)
+		sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, false)
 	}
 	if id != 0 && screen_owner == 0 {
 		mode_saved = conf_mode
@@ -1594,7 +1596,6 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	}
 	delete(conf_tiles)
 	conf_tiles = nil
-	conf_has_card = false
 	quit_on = false
 	help_open = false
 	slot_close(&self_engine)

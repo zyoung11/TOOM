@@ -32,6 +32,7 @@ AppConfig :: struct {
 	mic_default:   bool   `json:"mic_default"`,
 	spk_default:   bool   `json:"spk_default"`,
 	cam_default:   bool   `json:"cam_default"`,
+	canvas_width:  int    `json:"canvas_width"`,
 }
 
 app_cfg: AppConfig
@@ -68,6 +69,7 @@ config_default :: proc() -> AppConfig {
 		mic_default = true,
 		spk_default = true,
 		cam_default = true,
+		canvas_width = 200,
 	}
 }
 
@@ -163,6 +165,7 @@ config_collect :: proc() {
 	app_cfg.mic_default = mic_default
 	app_cfg.spk_default = spk_default
 	app_cfg.cam_default = cam_default
+	app_cfg.canvas_width = canvas_width
 }
 
 // config_apply installs the persisted settings as live defaults.
@@ -204,6 +207,9 @@ config_apply :: proc() {
 	mic_default = app_cfg.mic_default
 	spk_default = app_cfg.spk_default
 	cam_default = app_cfg.cam_default
+	if app_cfg.canvas_width >= 20 {
+		canvas_width = app_cfg.canvas_width
+	}
 }
 
 // config_form_set stores the submitted form values. Empty values keep

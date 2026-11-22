@@ -28,8 +28,6 @@ Piece :: struct {
 conf_mode:      LayoutMode
 conf_focus:     int
 conf_tiles:     []Tile
-conf_card:      Tile
-conf_has_card:  bool
 conf_code_tail: string
 color_idx:      int = 4
 help_open:      bool
@@ -63,7 +61,6 @@ conf_draw :: proc() {
 		return
 	}
 	caps_draw(&b)
-	card_draw(&b)
 	footer_draw(&b)
 	fb_end(&b)
 }
@@ -140,34 +137,6 @@ conf_caption :: proc(b: ^FB, info: CapInfo) {
 		fb_fg(b, C_RED)
 		fb_str(b, suffix)
 	}
-	fb_reset(b)
-}
-
-// card_draw paints the room info card inside the first empty grid
-// block.
-card_draw :: proc(b: ^FB) {
-	if !conf_has_card {
-		return
-	}
-	t := conf_card
-	if t.bw < 22 || t.bh < 7 {
-		return
-	}
-	ui_panel(b, t.row, t.col, t.bw, t.bh, "room info")
-	rbuf: [256]u8
-	fb_at(b, t.row + 2, t.col + 2)
-	fb_fg(b, C_DIM)
-	fb_str(b, "room ")
-	fb_fg(b, C_TEXT)
-	fb_str(b, cut_text(sess.room, t.bw - 9, rbuf[:]))
-	fb_at(b, t.row + 3, t.col + 2)
-	fb_fg(b, C_DIM)
-	fb_str(b, "code ")
-	fb_fg(b, C_YELLOW)
-	fb_str(b, conf_code_tail)
-	fb_at(b, t.row + 4, t.col + 2)
-	fb_fg(b, C_DIM)
-	fb_str(b, tprintf("↑ %d  ↓ %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)))
 	fb_reset(b)
 }
 

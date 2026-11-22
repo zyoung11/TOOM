@@ -48,21 +48,37 @@ tile_fit :: proc(t: ^Tile, src_w, src_h: int) {
 	t.cap = t.prow + ph
 }
 
+// canvas_width is the shared picture area width in columns like the
+// BM progress bar width. Narrow terminals shrink it and the height is
+// derived from the 16:9 video aspect.
+canvas_width: int = 200
+
+// canvas_box clamps the drawable area to the canvas width and returns
+// the centered box as row, col, width and height in cells.
+canvas_box :: proc(cols, rows: int) -> (int, int, int, int) {
+	cw, ch := term_cell_pixels()
+	vw := min(cols, canvas_width)
+	vh := min(rows, canvas_width * max(cw, 1) * 9 / (max(ch, 1) * 16))
+	vw = max(vw, 8)
+	vh = max(vh, 4)
+	return (rows - vh) / 2, (cols - vw) / 2, vw, vh
+}
+
 // layout_grid arranges count members in the grid whose tiles carry
-// the largest pictures. Empty blocks are allowed and the first one is
-// returned as the info card slot. The tiles cover the area above the
-// two footer rows.
-layout_grid :: proc(count, src_w, src_h: int) -> ([]Tile, Tile, bool) {
+// the largest pictures. Empty blocks stay empty. The tiles cover the
+// centered canvas above the two footer rows.
+layout_grid :: proc(count, src_w, src_h: int) -> []Tile {
 	n := max(count, 1)
 	cols, rows := term_size()
+	crows := rows - 2
 	cw, ch := term_cell_pixels()
-	area_rows := rows - 2
+	off_r, off_c, vw, vh := canvas_box(cols, crows)
 	gap := 1
 	best_gc, best_gr, best_score := 0, 0, -1
 	for gc in 1..=n {
 		gr := (n + gc - 1) / gc
-		bw := (cols - (gc - 1) * gap) / gc
-		bh := area_rows / gr
+		bw := (vw - (gc - 1) * gap) / gc
+		bh := vh / gr
 		if bw < 4 || bh < 2 {
 			continue
 		}
@@ -73,76 +89,70 @@ layout_grid :: proc(count, src_w, src_h: int) -> ([]Tile, Tile, bool) {
 		}
 	}
 	if best_gc == 0 {
-		return nil, Tile{}, false
+		return nil
 	}
-	bw := (cols - (best_gc - 1) * gap) / best_gc
-	bh := area_rows / best_gr
-	left := (cols - (best_gc * bw + (best_gc - 1) * gap)) / 2
-	top := 1 + (area_rows - best_gr * bh) / 2
+	bw := (vw - (best_gc - 1) * gap) / best_gc
+	bh := vh / best_gr
+	left := 1 + off_c + (vw - (best_gc * bw + (best_gc - 1) * gap)) / 2
+	top := 1 + off_r + (vh - best_gr * bh) / 2
 	tiles := make([]Tile, n)
-	card: Tile
-	has_card := false
-	for i in 0..<best_gc * best_gr {
+	for i in 0..<min(n, best_gc * best_gr) {
 		gy := i / best_gc
 		gx := i % best_gc
-		b := Tile{row = top + gy * bh, col = left + gx * (bw + gap), bw = bw, bh = bh}
-		if i < n {
-			tiles[i] = b
-		} else if !has_card {
-			card = b
-			has_card = true
-		}
+		tiles[i] = Tile{row = top + gy * bh, col = left + gx * (bw + gap), bw = bw, bh = bh}
 	}
-	return tiles, card, has_card
+	return tiles
 }
 
 // layout_focus arranges one big block for the focused member and a
-// thumbnail strip for every other member. Wide terminals put the
-// strip on the right, tall terminals put it at the bottom.
+// thumbnail strip for every other member on the centered canvas. Wide
+// terminals put the strip on the right, tall terminals put it at the
+// bottom.
 layout_focus :: proc(count, focus, src_w, src_h: int) -> []Tile {
 	n := max(count, 1)
 	f := min(max(focus, 0), n - 1)
 	cols, rows := term_size()
 	cw, ch := term_cell_pixels()
-	area_rows := rows - 2
-	if area_rows < 2 {
+	crows := rows - 2
+	if crows < 2 {
 		return nil
 	}
+	off_r, off_c, vw, vh := canvas_box(cols, crows)
 	tiles := make([]Tile, n)
 	strip := n - 1
 	if strip == 0 {
-		tiles[0] = Tile{row = 1, col = 1, bw = cols, bh = area_rows}
+		tiles[0] = Tile{row = 1 + off_r, col = 1 + off_c, bw = vw, bh = vh}
 		return tiles
 	}
-	horizontal := cols * cw * 10 >= area_rows * ch * 11
+	horizontal := vw * cw * 10 >= vh * ch * 11
 	if horizontal {
-		big_bw := cols * 70 / 100
-		strip_col := 1 + big_bw + 1
-		strip_bw := cols - big_bw - 1
-		tiles[f] = Tile{row = 1, col = 1, bw = big_bw, bh = area_rows}
+		big_bw := vw * 70 / 100
+		strip_col := 1 + off_c + big_bw + 1
+		strip_bw := vw - big_bw - 1
+		tiles[f] = Tile{row = 1 + off_r, col = 1 + off_c, bw = big_bw, bh = vh}
 		k := 0
 		for i in 0..<n {
 			if i == f {
 				continue
 			}
-			top := 1 + k * area_rows / strip
-			bot := 1 + (k + 1) * area_rows / strip
+			top := 1 + off_r + k * vh / strip
+			bot := 1 + off_r + (k + 1) * vh / strip
 			tiles[i] = Tile{row = top, col = strip_col, bw = strip_bw, bh = bot - top}
 			k += 1
 		}
 	} else {
-		big_bh := area_rows * 70 / 100
-		strip_row := 1 + big_bh + 1
-		strip_bh := area_rows - big_bh - 1
-		tiles[f] = Tile{row = 1, col = 1, bw = cols, bh = big_bh}
+		big_bh := vh * 70 / 100
+		strip_row := 1 + off_r + big_bh + 1
+		strip_bh := vh - big_bh - 1
+		tiles[f] = Tile{row = 1 + off_r, col = 1 + off_c, bw = vw, bh = big_bh}
 		k := 0
 		for i in 0..<n {
 			if i == f {
 				continue
 			}
-			left := k * cols / strip
-			right := (k + 1) * cols / strip
-			tiles[i] = Tile{row = strip_row, col = left + 1, bw = right - left, bh = strip_bh}
+			left := 1 + off_c + k * vw / strip
+			right := 1 + off_c + (k + 1) * vw / strip
+			tiles[i] = Tile{row = strip_row, col = left, bw = right - left, bh = strip_bh}
 			k += 1
 		}
 	}
