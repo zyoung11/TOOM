@@ -170,10 +170,16 @@ colors_apply :: proc() {
 	if self_engine != nil {
 		aideo.aideo_set_colors(self_engine, colors)
 	}
+	if self_screen_engine != nil {
+		aideo.aideo_set_colors(self_screen_engine, colors)
+	}
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
 		if p.engine != nil {
 			aideo.aideo_set_colors(p.engine, colors)
+		}
+		if p.screen_engine != nil {
+			aideo.aideo_set_colors(p.screen_engine, colors)
 		}
 	}
 	sync.mutex_unlock(&peer_mu)
@@ -500,14 +506,14 @@ cam_switch :: proc() {
 // sixel engines quiet while it is open and applies device changes
 // live.
 dev_modal_run :: proc() {
-	in_id := strings.clone(dev_sel_id(0))
-	out_id := strings.clone(dev_sel_id(1))
+	in_id := strings.clone(dev_pick[0].use)
+	out_id := strings.clone(dev_pick[1].use)
 	old_cam := strings.clone(cam_dev)
 	sync.atomic_store(&ui_modal, 1)
 	time.sleep(60 * time.Millisecond)
 	dev_run()
 	sync.atomic_store(&ui_modal, 0)
-	if dev_sel_id(0) != in_id || dev_sel_id(1) != out_id {
+	if dev_pick[0].use != in_id || dev_pick[1].use != out_id {
 		audio_switch()
 	}
 	if cam_dev != old_cam {
@@ -840,16 +846,22 @@ screen_pipeline_start :: proc() -> bool {
 		return true
 	}
 	if share_window != 0 {
-		w, shown, alive := win_track(share_window)
+		w, _, alive := win_track(share_window)
 		if !alive || !win_use() {
+			return false
+		}
+		if w.rect.w <= 0 || w.rect.h <= 0 {
+			if w.floating {
+				toast_show("window not on screen", 2)
+			} else {
+				toast_show("tiled window needs niri update", 2)
+			}
 			return false
 		}
 		if !screen_open_ex(&screen_cap, w.output, "", sync.atomic_load(&share_cursor) != 0) {
 			return false
 		}
-		if shown {
-			screen_set_region(&screen_cap, w.rect.x, w.rect.y, w.rect.w, w.rect.h)
-		}
+		screen_set_region(&screen_cap, w.rect.x, w.rect.y, w.rect.w, w.rect.h)
 		sync.atomic_store(&screen_ready, 1)
 		return true
 	}
@@ -912,13 +924,13 @@ screen_tx_thread :: proc() {
 			continue
 		}
 		if share_window != 0 {
-			w, shown, alive := win_track(share_window)
+			w, _, alive := win_track(share_window)
 			if !alive {
 				sync.atomic_store(&win_lost, 1)
 				screen_stop()
 				continue
 			}
-			if shown {
+			if w.rect.w > 0 && w.rect.h > 0 {
 				screen_set_region(&screen_cap, w.rect.x, w.rect.y, w.rect.w, w.rect.h)
 			}
 		}
@@ -1292,18 +1304,6 @@ conf_key :: proc(k: Key) -> bool {
 			}
 			sync.atomic_store(&layout_dirty, 1)
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
-		case 'j', 'J':
-			if color_idx > 0 {
-				color_idx -= 1
-				colors_apply()
-				toast_show(tprintf("colors %d", colors_now()), 0)
-			}
-		case 'k', 'K':
-			if color_idx < len(CONF_COLORS) - 1 {
-				color_idx += 1
-				colors_apply()
-				toast_show(tprintf("colors %d", colors_now()), 0)
-			}
 		case '?':
 			sync.atomic_store(&ui_modal, 1)
 			time.sleep(60 * time.Millisecond)

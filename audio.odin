@@ -177,8 +177,9 @@ audio_start :: proc() -> bool {
 	sel_cap: ma.device_id
 	sel_pb: ma.device_id
 	ccfg := ma.device_config_init(.capture)
-	if dev_inited && dev_sel[0] > 0 && dev_sel[0] < len(dev_lists[0]) {
-		ccfg.capture.pDeviceID = &dev_lists[0][dev_sel[0]].id
+	if cid, ok := dev_audio_id(true); ok {
+		sel_cap = cid
+		ccfg.capture.pDeviceID = &sel_cap
 	} else if audio_ctx.backend == .pulseaudio {
 		pulse_default_id(&sel_cap, true)
 		ccfg.capture.pDeviceID = &sel_cap
@@ -198,8 +199,9 @@ audio_start :: proc() -> bool {
 	}
 
 	pcfg := ma.device_config_init(.playback)
-	if dev_inited && dev_sel[1] > 0 && dev_sel[1] < len(dev_lists[1]) {
-		pcfg.playback.pDeviceID = &dev_lists[1][dev_sel[1]].id
+	if pid, ok := dev_audio_id(false); ok {
+		sel_pb = pid
+		pcfg.playback.pDeviceID = &sel_pb
 	} else if audio_ctx.backend == .pulseaudio {
 		pulse_default_id(&sel_pb, false)
 		pcfg.playback.pDeviceID = &sel_pb
@@ -346,11 +348,13 @@ desk_capture_pop :: proc(dst: []i16) -> int {
 // ".monitor" suffix.
 desk_find_monitor :: proc() -> (ma.device_id, bool) {
 	target := ""
-	if dev_sel[1] > 0 && dev_sel[1] < len(dev_lists[1]) {
-		target = id_str(&dev_lists[1][dev_sel[1]].id)
-	} else {
-		for j in 1..<len(dev_lists[1]) {
-			e := &dev_lists[1][j]
+	if id, ok := dev_audio_id(false); ok {
+		target = id_str(&id)
+	}
+	outs := audio_enum_devs(false)
+	if target == "" {
+		for j in 1..<len(outs) {
+			e := &outs[j]
 			if e.is_default {
 				target = id_str(&e.id)
 				break
@@ -358,16 +362,24 @@ desk_find_monitor :: proc() -> (ma.device_id, bool) {
 		}
 	}
 	if target == "" {
+		dev_list_free(&outs)
 		return {}, false
 	}
 	want := fmt.tprintf("%s.monitor", target)
-	for j in 0..<len(mon_list) {
-		e := &mon_list[j]
+	mons := audio_enum_mon()
+	found: ma.device_id
+	ok := false
+	for j in 0..<len(mons) {
+		e := &mons[j]
 		if id_str(&e.id) == want {
-			return e.id, true
+			found = e.id
+			ok = true
+			break
 		}
 	}
-	return {}, false
+	dev_list_free(&outs)
+	dev_list_free(&mons)
+	return found, ok
 }
 
 // desk_start opens the monitor of the active output device for system
@@ -376,7 +388,6 @@ desk_start :: proc() -> bool {
 	if !audio_ok {
 		return false
 	}
-	dev_init()
 	id, ok := desk_find_monitor()
 	if !ok {
 		return false

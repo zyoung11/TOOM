@@ -335,12 +335,18 @@ void* toom_screen_open_ex(const char* name, const char* region, int cursor) {
 	wl_display_roundtrip(s->disp);
 	s->out_pick = 0;
 	if (name && name[0]) {
+		int pick = -1;
 		for (int i = 0; i < s->out_count; i++) {
 			if (strcmp(s->outs[i].desc, name) == 0) {
-				s->out_pick = i;
+				pick = i;
 				break;
 			}
 		}
+		if (pick < 0) {
+			toom_screen_close(s);
+			return NULL;
+		}
+		s->out_pick = pick;
 	}
 	s->mgr = (struct zwlr_screencopy_manager_v1*)wl_registry_bind(s->registry, s->mgr_name, &zwlr_screencopy_manager_v1_interface, s->mgr_version);
 	s->shm = (struct wl_shm*)wl_registry_bind(s->registry, s->shm_name, &wl_shm_interface, 1);

@@ -239,6 +239,11 @@ footer_draw :: proc(b: ^FB) {
 		pri = 8,
 	})
 	row_draw(b, rows - 1, status[:], cols)
+	if quit_armed() {
+		hint := [1]Piece{{r = "press q again to quit   any other key cancels", rc = C_RED, rb = true, pri = 0}}
+		row_draw(b, rows, hint[:], cols)
+		return
+	}
 	if toast_active() {
 		kind := toast_kind
 		col := C_TEXT
@@ -251,7 +256,7 @@ footer_draw :: proc(b: ^FB) {
 		row_draw(b, rows, hint[:], cols)
 		return
 	}
-	keys := make([dynamic]Piece, 0, 11)
+	keys := make([dynamic]Piece, 0, 10)
 	defer delete(keys)
 	append(&keys, Piece{l = "q", r = "quit", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 1})
 	append(&keys, Piece{l = "s", r = "screen", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 2})
@@ -262,7 +267,6 @@ footer_draw :: proc(b: ^FB) {
 	append(&keys, Piece{l = "d", r = "settings", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
 	append(&keys, Piece{l = "f", r = "layout", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 8})
 	append(&keys, Piece{l = "h", r = "mirror", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 9})
-	append(&keys, Piece{l = "j/k", r = "colors", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 10})
 	append(&keys, Piece{l = "?", r = "help", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 0})
 	row_draw(b, rows, keys[:], cols)
 }
@@ -364,7 +368,7 @@ help_draw :: proc() {
 	b: FB
 	fb_begin(&b)
 	cols, rows := term_size()
-	lines := [17][2]string{
+	lines := [16][2]string{
 		{"", "media"},
 		{"m", "toggle speaker mute"},
 		{"n", "toggle microphone mute"},
@@ -378,7 +382,6 @@ help_draw :: proc() {
 		{"h", "toggle mirrored self view"},
 		{"Tab ←/→", "pick the focused member"},
 		{"", "other"},
-		{"j/k", "decrease or increase color count"},
 		{"?", "show or hide this page"},
 		{"q/Esc", "quit after one confirmation"},
 		{"", ""},

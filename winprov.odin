@@ -7,12 +7,13 @@ WinRect :: struct {
 
 // WinInfo is one application window known to a window provider.
 WinInfo :: struct {
-	id:     u64,
-	title:  string,
-	app:    string,
-	output: string,
-	rect:   WinRect,
-	shown:  bool,
+	id:       u64,
+	title:    string,
+	app:      string,
+	output:   string,
+	rect:     WinRect,
+	shown:    bool,
+	floating: bool,
 }
 
 // win_entries holds the last window snapshot for menu building.

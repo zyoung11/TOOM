@@ -29,11 +29,12 @@ NiriLayout :: struct {
 
 // NiriWin mirrors one window of the niri IPC.
 NiriWin :: struct {
-	ID:     u64        `json:"id"`,
-	Title:  string     `json:"title"`,
-	AppID:  string     `json:"app_id"`,
-	WSID:   u64        `json:"workspace_id"`,
-	Layout: NiriLayout `json:"layout"`,
+	ID:      u64        `json:"id"`,
+	Title:   string     `json:"title"`,
+	AppID:   string     `json:"app_id"`,
+	WSID:    u64        `json:"workspace_id"`,
+	Floating: bool       `json:"is_floating"`,
+	Layout:  NiriLayout `json:"layout"`,
 }
 
 // NiriWs mirrors one workspace of the niri IPC.
@@ -43,7 +44,8 @@ NiriWs :: struct {
 	Active: bool   `json:"is_active"`,
 }
 
-// NiriOut mirrors one output of the niri IPC.
+// NiriOut mirrors one output of the niri IPC. The outputs message is
+// a JSON object keyed by output name, so it unmarshals into a map.
 NiriOut :: struct {
 	Name:    string `json:"name"`,
 	Logical: struct {
@@ -142,14 +144,15 @@ niri_poll_tables :: proc() {
 		sync.mutex_unlock(&niri_mu)
 	}
 	out_raw := niri_exec("niri msg --json outputs")
-	out_list: []NiriOut
-	if json.unmarshal(transmute([]u8)out_raw, &out_list) == nil {
+	out_map: map[string]NiriOut
+	if json.unmarshal(transmute([]u8)out_raw, &out_map) == nil {
 		sync.mutex_lock(&niri_mu)
 		niri_outs = make(map[string]WinRect)
-		for o in out_list {
+		for _, o in out_map {
 			niri_outs[o.Name] = WinRect{x = o.Logical.X, y = o.Logical.Y, w = 0, h = 0}
 		}
 		sync.mutex_unlock(&niri_mu)
+		clear(&out_map)
 	}
 }
 
@@ -191,6 +194,11 @@ niri_poll :: proc() {
 	next := make(map[u64]WinInfo)
 	for w in wins {
 		rect, shown := niri_win_rect(w, niri_ws, niri_outs)
+		if !shown {
+			if old, ok := niri_wins[w.ID]; ok {
+				rect = old.rect
+			}
+		}
 		title := w.Title
 		if title == "" {
 			title = w.AppID
@@ -199,7 +207,7 @@ niri_poll :: proc() {
 		if info, ok := niri_ws[w.WSID]; ok {
 			outn = info.Output
 		}
-		next[w.ID] = WinInfo{id = w.ID, title = title, app = w.AppID, output = outn, rect = rect, shown = shown}
+		next[w.ID] = WinInfo{id = w.ID, title = title, app = w.AppID, output = outn, rect = rect, shown = shown, floating = w.Floating}
 	}
 	niri_wins = next
 }
