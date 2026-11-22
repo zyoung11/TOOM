@@ -156,13 +156,34 @@ engines_repaint :: proc() {
 	if self_engine != nil {
 		aideo.aideo_repaint(self_engine)
 	}
+	if self_screen_engine != nil {
+		aideo.aideo_repaint(self_screen_engine)
+	}
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
 		if p.engine != nil {
 			aideo.aideo_repaint(p.engine)
 		}
+		if p.screen_engine != nil {
+			aideo.aideo_repaint(p.screen_engine)
+		}
 	}
 	sync.mutex_unlock(&peer_mu)
+}
+
+// ui_modal_on silences the sixel streams before a text page covers
+// the meeting screen so no video diff mixes with the text layer.
+ui_modal_on :: proc() {
+	sync.atomic_store(&ui_modal, 1)
+}
+
+// ui_recover ends the text page, clears the screen and forces every
+// sixel engine to redraw in full so no stale picture or partial diff
+// survives.
+ui_recover :: proc() {
+	sync.atomic_store(&ui_modal, 0)
+	screen_clear()
+	engines_repaint()
 }
 
 // colors_apply pushes the selected palette size to every engine.
@@ -239,8 +260,10 @@ layout_apply :: proc() {
 			moved = true
 		}
 	}
+	// The screen is cleared once per layout change so no stale
+	// picture or partial sixel diff survives the rearrangement.
+	screen_clear()
 	if moved {
-		screen_clear()
 		if self_engine != nil {
 			aideo.aideo_close(self_engine)
 			self_engine = nil
@@ -296,6 +319,7 @@ layout_apply :: proc() {
 	conf_tiles = tiles
 	conf_card = card
 	conf_has_card = has_card
+	engines_repaint()
 	sync.atomic_store(&layout_dirty, 0)
 }
 
@@ -511,11 +535,11 @@ dev_modal_run :: proc() {
 	in_id := strings.clone(dev_pick[0].use)
 	out_id := strings.clone(dev_pick[1].use)
 	old_cam := strings.clone(cam_dev)
-	sync.atomic_store(&ui_modal, 1)
+	ui_modal_on()
 	time.sleep(60 * time.Millisecond)
 	dev_session = true
 	dev_run()
-	sync.atomic_store(&ui_modal, 0)
+	ui_recover()
 	if dev_pick[0].use != in_id || dev_pick[1].use != out_id {
 		audio_switch()
 	}
@@ -532,8 +556,6 @@ dev_modal_run :: proc() {
 	if len(old_cam) > 0 {
 		delete(old_cam)
 	}
-	screen_clear()
-	engines_repaint()
 }
 
 capture_thread :: proc() {
@@ -884,6 +906,9 @@ share_target_apply :: proc(e: ^DevEnt) {
 // listed and windows follow the windows setting. Picking a target
 // starts or retargets sharing and picking stop sharing ends it.
 share_menu_run :: proc() {
+	ui_modal_on()
+	time.sleep(60 * time.Millisecond)
+	defer ui_recover()
 	opts: [dynamic]DevEnt
 	defer dev_list_free(&opts)
 	base := 0
@@ -1006,12 +1031,14 @@ screen_teardown :: proc() {
 	screen_sh = 0
 }
 
-// screen_stop closes the screen capture pipeline.
+// screen_stop closes the screen capture pipeline and schedules a
+// layout pass so the share tile never survives as a stale region.
 screen_stop :: proc() {
 	sync.atomic_store(&screen_send, 0)
 	sync.atomic_store(&screen_ready, 0)
 	screen_close(&screen_cap)
 	screen_teardown()
+	sync.atomic_store(&layout_dirty, 1)
 }
 
 // screen_setup rebuilds the scaler, conversion buffers and encoder for
@@ -1350,8 +1377,7 @@ conf_key :: proc(k: Key) -> bool {
 				sync.atomic_store(&cam_off, off)
 				sync.atomic_store(&send_video, 1 - off)
 				if off == 1 {
-					screen_clear()
-					engines_repaint()
+					ui_recover()
 					toast_show("camera off", 0)
 				} else {
 					toast_show("camera on", 1)
@@ -1406,7 +1432,7 @@ conf_key :: proc(k: Key) -> bool {
 			share_menu_run()
 			sync.atomic_store(&layout_dirty, 1)
 		case '?':
-			sync.atomic_store(&ui_modal, 1)
+			ui_modal_on()
 			time.sleep(60 * time.Millisecond)
 			help_open = true
 			help_draw()
@@ -1503,9 +1529,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 		if k.kind != .None {
 			if help_open {
 				help_open = false
-				sync.atomic_store(&ui_modal, 0)
-				screen_clear()
-				engines_repaint()
+				ui_recover()
 				continue
 			}
 			if conf_key(k) {
