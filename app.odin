@@ -158,10 +158,18 @@ slot_set :: proc(slot: ^^aideo.Engine, e: ^aideo.Engine) {
 }
 
 // slot_resize moves the engine behind a pointer slot to a new tile,
-// creating it when missing and the source size is known.
+// creating it when missing and the source size is known. While a text
+// page covers the screen the engine is rebuilt instead of resized
+// because a resize emits its own screen wipe behind the text page.
 slot_resize :: proc(slot: ^^aideo.Engine, src_w, src_h: int, t: Tile) {
 	sync.mutex_lock(&engine_mu)
 	if slot^ == nil {
+		if src_w > 0 && src_h > 0 {
+			slot^ = engine_new(src_w, src_h, t)
+		}
+	} else if sync.atomic_load(&ui_modal) != 0 {
+		aideo.aideo_close(slot^)
+		slot^ = nil
 		if src_w > 0 && src_h > 0 {
 			slot^ = engine_new(src_w, src_h, t)
 		}
