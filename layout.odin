@@ -8,6 +8,7 @@ Tile :: struct {
 	w, h:      int,
 	prow, pcol: int,
 	cap:       int,
+	snap:      i8,
 }
 
 // LayoutMode is the picture arrangement cycled with f.
@@ -43,7 +44,14 @@ tile_fit :: proc(t: ^Tile, src_w, src_h: int) {
 	ph := (h + ch - 1) / ch
 	pw := (w + cw - 1) / cw
 	t.w, t.h = w, h
-	t.prow = t.row + max((t.bh - ph - 1) / 2, 0)
+	switch t.snap {
+	case 1:
+		t.prow = t.row + max(t.bh - 1 - ph, 0)
+	case 2:
+		t.prow = t.row
+	case:
+		t.prow = t.row + max((t.bh - ph - 1) / 2, 0)
+	}
 	t.pcol = t.col + max((t.bw - pw) / 2, 0)
 	t.cap = t.prow + ph
 }
@@ -138,6 +146,13 @@ layout_focus :: proc(count, focus, src_w, src_h: int) -> []Tile {
 			top := 1 + off_r + k * vh / strip
 			bot := 1 + off_r + (k + 1) * vh / strip
 			tiles[i] = Tile{row = top, col = strip_col, bw = strip_bw, bh = bot - top}
+			if strip == 2 {
+				if k == 0 {
+					tiles[i].snap = 1
+				} else {
+					tiles[i].snap = 2
+				}
+			}
 			k += 1
 		}
 	} else {
