@@ -1357,7 +1357,11 @@ epoch: time.Time
 // conf_key applies one meeting key. It returns true when the user
 // confirmed the quit.
 conf_key :: proc(k: Key) -> bool {
-	quit_key := k.kind == .Quit || (k.kind == .Char && (k.ch == 'q' || k.ch == 'Q'))
+	if k.kind == .Quit {
+		quit_on = false
+		return false
+	}
+	quit_key := k.kind == .Char && (k.ch == 'q' || k.ch == 'Q')
 	if quit_key {
 		if quit_armed() {
 			return true
