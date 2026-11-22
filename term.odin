@@ -70,6 +70,12 @@ winch_handler :: proc "c" (_: c.int) {
 	sync.atomic_store(&winch_flag, 1)
 }
 
+// quit_handler lets a closing terminal or a kill request the normal
+// shutdown path so the leave message still reaches the server.
+quit_handler :: proc "c" (_: c.int) {
+	sync.atomic_store(&app_stop, 1)
+}
+
 // term_sig_setup installs the winch handler with SIGWINCH blocked, so
 // threads created afterwards never see the signal. Call
 // term_sig_unblock after the render threads exist.
@@ -78,6 +84,8 @@ term_sig_setup :: proc() {
 	set.bits[SIGWINCH / 64] = 1 << u64(SIGWINCH % 64)
 	sigprocmask(SIG_BLOCK, &set, nil)
 	signal(SIGWINCH, cast(rawptr)winch_handler)
+	signal(1, cast(rawptr)quit_handler)
+	signal(15, cast(rawptr)quit_handler)
 }
 
 term_sig_unblock :: proc() {

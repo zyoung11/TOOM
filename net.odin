@@ -3,6 +3,7 @@ package toom
 import "core:c"
 import "core:fmt"
 import "core:sync"
+import "core:time"
 
 AF_INET      :: 2
 SOCK_DGRAM   :: 2
@@ -264,7 +265,10 @@ sess_update :: proc(s: ^Session, cam, mic, screen: bool) {
 sess_bye :: proc(s: ^Session) {
 	body := json_marshal(struct{}{})
 	defer delete(body)
-	sess_send_env(s, MSG_BYE, body)
+	for i in 0..<3 {
+		sess_send_env(s, MSG_BYE, body)
+		time.sleep(20 * time.Millisecond)
+	}
 }
 
 // sess_send_media seals one media fragment and sends it.

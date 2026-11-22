@@ -10,7 +10,7 @@ import (
 const (
 	maxMembersPerRoom = 10
 	maxRooms          = 1024
-	memberTimeout     = 20 * time.Second
+	memberTimeout     = 10 * time.Second
 	challengeTTL      = 10 * time.Second
 	roomEmptyTTL      = 30 * time.Minute
 )
