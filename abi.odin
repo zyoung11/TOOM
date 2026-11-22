@@ -58,7 +58,7 @@ AVFrame :: struct {
 foreign toomlibs {
 	h264enc_open :: proc(w, h, fps, kbps, prefer: c.int) -> rawptr ---
 	h264enc_backend :: proc(e: rawptr) -> cstring ---
-	h264enc_encode :: proc(e: rawptr, y, u, v: [^]u8, sy, sc: c.int, out: [^]u8, cap: c.int, keyframe: ^c.int) -> c.int ---
+	h264enc_encode :: proc(e: rawptr, y, u, v: [^]u8, sy, sc: c.int, out: [^]u8, cap: c.int, force_key: c.int, keyframe: ^c.int) -> c.int ---
 	h264enc_close :: proc(e: rawptr) ---
 
 	avcodec_find_decoder_by_name :: proc(name: cstring) -> rawptr ---

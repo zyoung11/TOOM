@@ -179,7 +179,6 @@ config_apply :: proc() {
 	if len(app_cfg.camera) > 0 {
 		cam_set(app_cfg.camera)
 	}
-	cam_auto_pick()
 	cam_w_req = app_cfg.width
 	cam_h_req = app_cfg.height
 	app_fps = app_cfg.fps

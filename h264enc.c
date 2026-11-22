@@ -18,6 +18,8 @@ struct h264enc {
 	AVBufferRef *hwdev;
 	int use_hw;
 	int w, h;
+	int kbps, fps;
+	int backend_id;
 	int64_t pts;
 };
 
@@ -121,13 +123,16 @@ struct h264enc *h264enc_open(int w, int h, int fps, int kbps, int prefer) {
 		int backend = order[i];
 		if (backend == 3 && open_hw(e, "h264_nvenc", AV_HWDEVICE_TYPE_CUDA,
 				AV_PIX_FMT_CUDA, kbps, fps) == 0) {
+			e->backend_id = 3;
 			goto ready;
 		}
 		if (backend == 2 && open_hw(e, "h264_vaapi", AV_HWDEVICE_TYPE_VAAPI,
 				AV_PIX_FMT_VAAPI, kbps, fps) == 0) {
+			e->backend_id = 2;
 			goto ready;
 		}
 		if (backend == 1 && open_x264(e, kbps, fps) == 0) {
+			e->backend_id = 1;
 			goto ready;
 		}
 		if (e->ctx) {
@@ -138,6 +143,8 @@ struct h264enc *h264enc_open(int w, int h, int fps, int kbps, int prefer) {
 	goto fail;
 
 ready:
+	e->kbps = kbps;
+	e->fps = fps;
 	e->sw->width = e->w;
 	e->sw->height = e->h;
 	e->sw->format = e->use_hw ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
@@ -180,8 +187,40 @@ static void fill_nv12(struct h264enc *e, const uint8_t *y, const uint8_t *u,
 	}
 }
 
+// h264enc_reopen rebuilds the encoder context so the next frame is an
+// IDR frame on every backend. A plain I frame is not independently
+// decodable on the hardware encoders, so members who just joined
+// would stay black until the next GOP boundary.
+static int h264enc_reopen(struct h264enc *e) {
+	int id = e->backend_id;
+	if (e->hwframe) {
+		av_frame_free(&e->hwframe);
+	}
+	if (e->ctx) {
+		avcodec_free_context(&e->ctx);
+	}
+	av_buffer_unref(&e->hwdev);
+	if (id == 3 && open_hw(e, "h264_nvenc", AV_HWDEVICE_TYPE_CUDA,
+			AV_PIX_FMT_CUDA, e->kbps, e->fps) == 0)
+		goto ok;
+	if (id == 2 && open_hw(e, "h264_vaapi", AV_HWDEVICE_TYPE_VAAPI,
+			AV_PIX_FMT_VAAPI, e->kbps, e->fps) == 0)
+		goto ok;
+	if (id == 1 && open_x264(e, e->kbps, e->fps) == 0)
+		goto ok;
+	return -1;
+ok:
+	e->sw->format = e->use_hw ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
+	if (e->use_hw) {
+		e->hwframe = av_frame_alloc();
+		if (!e->hwframe)
+			return -1;
+	}
+	return 0;
+}
+
 int h264enc_encode(struct h264enc *e, const uint8_t *y, const uint8_t *u,
-	const uint8_t *v, int sy, int sc, uint8_t *out, int cap, int *keyframe) {
+	const uint8_t *v, int sy, int sc, uint8_t *out, int cap, int force_key, int *keyframe) {
 	AVFrame *send;
 	int ret;
 
@@ -189,8 +228,11 @@ int h264enc_encode(struct h264enc *e, const uint8_t *y, const uint8_t *u,
 		return -1;
 	if (keyframe)
 		*keyframe = 0;
+	if (force_key && h264enc_reopen(e) < 0)
+		return -1;
 	if (av_frame_make_writable(e->sw) < 0)
 		return -1;
+	e->sw->pict_type = force_key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
 
 	if (e->use_hw) {
 		fill_nv12(e, y, u, v, sy, sc);
@@ -201,6 +243,7 @@ int h264enc_encode(struct h264enc *e, const uint8_t *y, const uint8_t *u,
 			return -1;
 		}
 		e->hwframe->pts = e->pts++;
+		e->hwframe->pict_type = e->sw->pict_type;
 		send = e->hwframe;
 	} else {
 		int row;

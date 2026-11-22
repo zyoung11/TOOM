@@ -31,6 +31,7 @@ print_help :: proc() {
 		{"--enc <name>", "encoder backend auto x264 vaapi nvenc"},
 		{"--join <code>", "join a meeting directly, skip the forms"},
 		{"--name <name>", "display name used by --join"},
+		{"--no-cam", "join with the camera off"},
 		{"-h, --help", "show help"},
 		{"--version", "show version"},
 	}
@@ -91,6 +92,7 @@ main :: proc() {
 
 	join_code := ""
 	join_name := ""
+	join_nocam := false
 	i := 1
 	for i < len(os.args) {
 		a := os.args[i]
@@ -135,6 +137,8 @@ main :: proc() {
 			join_code = os.args[i]
 		} else if a == "--name" {
 			join_name = os.args[i]
+		} else if a == "--no-cam" {
+			join_nocam = true
 		} else if a == "--enc" {
 			switch os.args[i] {
 			case "auto":
@@ -173,7 +177,7 @@ main :: proc() {
 		if name == "" {
 			name = toom.app_cfg.name
 		}
-		err := toom.conference_run(mc.H, mc.R, name, mc.K, false, toom.cam_default, toom.mic_default)
+		err := toom.conference_run(mc.H, mc.R, name, mc.K, false, toom.cam_default && !join_nocam, toom.mic_default)
 		toom.term_leave_full()
 		if err != "" {
 			fmt.eprintf("[-] %s\n", err)

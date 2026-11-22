@@ -30,9 +30,15 @@ h264_enc_backend :: proc(enc: ^H264Enc) -> string {
 	return string(cstring(h264enc_backend(enc.handle)))
 }
 
-h264_enc_encode :: proc(enc: ^H264Enc, f: YuvFrame, out: []u8) -> (int, bool) {
+// h264_enc_encode compresses one frame. A true force_key emits an IDR
+// frame so members who just joined can start decoding at once.
+h264_enc_encode :: proc(enc: ^H264Enc, f: YuvFrame, out: []u8, force_key: bool) -> (int, bool) {
 	key: c.int = 0
-	n := h264enc_encode(enc.handle, f.y, f.u, f.v, f.sy, f.sc, raw_data(out), c.int(len(out)), &key)
+	fk: c.int = 0
+	if force_key {
+		fk = 1
+	}
+	n := h264enc_encode(enc.handle, f.y, f.u, f.v, f.sy, f.sc, raw_data(out), c.int(len(out)), fk, &key)
 	if n <= 0 {
 		return 0, false
 	}

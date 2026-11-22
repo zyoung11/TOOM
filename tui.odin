@@ -648,7 +648,7 @@ form_join :: proc() -> FormResult {
 				}
 				vcol := C_TEXT
 				if f.kind == .Toggle {
-					vcol = C_DIM
+					vcol = C_RED
 					if f.tog {
 						vcol = C_GREEN
 					}
@@ -783,7 +783,7 @@ form_create :: proc() -> FormResult {
 				}
 				vcol := C_TEXT
 				if f.kind == .Toggle {
-					vcol = C_DIM
+					vcol = C_RED
 					if f.tog {
 						vcol = C_GREEN
 					}

@@ -11,6 +11,11 @@ import "core:time"
 
 app_stop: i32
 
+// force_key_video and force_key_screen request one IDR frame so
+// members who just joined start decoding at once.
+force_key_video:  i32
+force_key_screen: i32
+
 tx_media_n: u32
 rx_media_n: u32
 
@@ -612,8 +617,9 @@ capture_thread :: proc() {
 		}
 		if f.w > 0 {
 			if sync.atomic_load(&send_video) != 0 {
-				n, key := h264_enc_encode(&enc, f, enc_out)
+				n, key := h264_enc_encode(&enc, f, enc_out, sync.atomic_load(&force_key_video) != 0)
 				if n > 0 {
+					sync.atomic_store(&force_key_video, 0)
 					flags := u8(0)
 					if key {
 						flags = MEDIA_FLAG_KEY
@@ -1140,8 +1146,9 @@ screen_tx_once :: proc(out: []u8, last: ^time.Time, first: ^bool, seq: ^u32) -> 
 		sy = c.int(w), sc = c.int(w / 2), w = w, h = h,
 	}
 	screen_preview(f)
-	n, key := h264_enc_encode(&screen_enc, f, out)
+	n, key := h264_enc_encode(&screen_enc, f, out, sync.atomic_load(&force_key_screen) != 0)
 	if n > 0 {
+		sync.atomic_store(&force_key_screen, 0)
 		flags := u8(0)
 		if key {
 			flags = MEDIA_FLAG_KEY
@@ -1277,6 +1284,8 @@ rx_thread :: proc() {
 			m: MemberJoinMsg
 			if json_unmarshal(env.body, &m) {
 				peer_add(PeerInfo{id = m.ID, name = m.Name, cam = m.Cam, mic = m.Mic})
+				sync.atomic_store(&force_key_video, 1)
+				sync.atomic_store(&force_key_screen, 1)
 			}
 		case MSG_MEMBER_LEAVE:
 			m: MemberLeaveMsg
