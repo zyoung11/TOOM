@@ -5,6 +5,7 @@ import "core:os"
 import posix "core:sys/posix"
 import "core:sync"
 import "core:time"
+import aideo "../Aideo"
 
 Termios :: struct {
 	iflag:  u32,
@@ -47,6 +48,14 @@ foreign syslib {
 	ioctl :: proc(fd: c.int, req: u64, arg: rawptr) -> c.int ---
 	signal :: proc(sig: c.int, handler: rawptr) -> rawptr ---
 	sigprocmask :: proc(how: c.int, set, old: ^Sigset) -> c.int ---
+}
+
+// term_write writes raw bytes to the terminal under the aideo write
+// lock so the sixel streams and the text layer never interleave.
+term_write :: proc(data: []u8) {
+	sync.mutex_lock(&aideo.stdout_mu)
+	os.write(os.stdout, data)
+	sync.mutex_unlock(&aideo.stdout_mu)
 }
 
 term_orig:    Termios
@@ -123,7 +132,7 @@ term_leave_full :: proc() {
 // screen_clear wipes the whole visible screen.
 screen_clear :: proc() {
 	seq: string = "\x1b[2J\x1b[3J\x1b[H"
-	os.write(os.stdout, transmute([]u8)seq)
+	term_write(transmute([]u8)seq)
 }
 
 term_leave_raw :: proc() {

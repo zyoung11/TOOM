@@ -81,7 +81,7 @@ fb_reset :: proc(b: ^FB) {
 
 fb_flush :: proc(b: ^FB) {
 	s := strings.to_string(b^)
-	os.write(os.stdout, transmute([]u8)s)
+	term_write(transmute([]u8)s)
 	strings.builder_reset(b)
 }
 
