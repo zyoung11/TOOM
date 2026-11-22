@@ -1423,7 +1423,8 @@ conf_key :: proc(k: Key) -> bool {
 				sync.atomic_store(&cam_off, off)
 				sync.atomic_store(&send_video, 1 - off)
 				if off == 1 {
-					ui_recover()
+					screen_clear()
+					engines_repaint()
 					toast_show("camera off", 0)
 				} else {
 					toast_show("camera on", 1)
@@ -1443,13 +1444,33 @@ conf_key :: proc(k: Key) -> bool {
 			}
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'f', 'F':
+			n := 1 + peer_count()
 			if conf_mode == .Grid {
 				conf_mode = .Focus
-				toast_show("layout: focus", 1)
+				conf_focus = 0
 			} else {
-				conf_mode = .Grid
-				toast_show("layout: grid", 1)
+				conf_focus += 1
+				if conf_focus >= n {
+					conf_mode = .Grid
+					conf_focus = 0
+				}
 			}
+			label := "grid"
+			if conf_mode == .Focus {
+				name := "me"
+				if conf_focus > 0 {
+					ids := peer_ids_sorted()
+					if conf_focus - 1 < len(ids) {
+						p := peer_get(ids[conf_focus - 1])
+						if p != nil {
+							name = p.info.name
+						}
+					}
+					delete(ids)
+				}
+				label = tprintf("focus %s", name)
+			}
+			toast_show(tprintf("layout: %s", label), 1)
 			layout_apply()
 		case 'h', 'H':
 			sync.atomic_store(&self_mirror, 1 - sync.atomic_load(&self_mirror))

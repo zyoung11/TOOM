@@ -410,12 +410,13 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 			}
 		}
 	case .Target:
+		active := sync.atomic_load(&screen_send) != 0
 		outs := screen_outputs()
 		for o in outs {
 			append(opts, DevEnt{
 				name = strings.clone(tprintf("output: %s", o)),
 				dev = strings.clone(o),
-				picked = share_window == 0 && share_output == o,
+				picked = active && share_window == 0 && share_output == o,
 			})
 			if opts[len(opts^) - 1].picked {
 				picked = len(opts^) - 1
@@ -432,7 +433,7 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 				append(opts, DevEnt{
 					name = strings.clone(tprintf("window: %s", label)),
 					win = w.id,
-					picked = share_window != 0 && share_window == w.id,
+					picked = active && share_window != 0 && share_window == w.id,
 				})
 				if opts[len(opts^) - 1].picked {
 					picked = len(opts^) - 1

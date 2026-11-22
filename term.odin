@@ -131,6 +131,9 @@ term_leave_full :: proc() {
 
 // screen_clear wipes the whole visible screen.
 screen_clear :: proc() {
+	if sync.atomic_load(&ui_modal) != 0 {
+		return
+	}
 	seq: string = "\x1b[2J\x1b[3J\x1b[H"
 	term_write(transmute([]u8)seq)
 }
