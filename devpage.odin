@@ -958,9 +958,9 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 		w := disp_width("▸ ") + disp_width(dev_row_label(kind)) + 2
 		if !dev_row_folder(kind) {
 			v, _ := dev_row_value(kind)
-			w += disp_width(v) + 1
+			w += disp_width(v) + 2
 		}
-		need1 = max(need1, w)
+		need1 = max(need1, w + 2)
 	}
 	w0 := min(need0, max(cols / 4, 8))
 	w1 := min(need1, max(cols / 3, 12))
@@ -1030,9 +1030,9 @@ dev_col_draw :: proc(b: ^FB, x, y, width, list_h: int, opts: []DevEnt, cursor, o
 }
 
 // dev_row_draw paints one settings row. Folder rows carry a drill
-// marker and hide the value. Plain rows right align a short value and
-// never cut the label. The cursor paints the whole row with the value
-// color like the BM selection bar.
+// marker and hide the value. The cursor paints one bar in the value
+// color that ends two columns past the content like the BM cursor
+// padding.
 dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, cursor, dim, folder_row: bool) {
 	nbuf: [512]u8
 	vbuf: [512]u8
@@ -1040,6 +1040,15 @@ dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, 
 	if folder_row {
 		mark = "▸ "
 	}
+	value_cut := ""
+	if !folder_row {
+		value_cut = cut_dot(value, max(width - disp_width(mark) - disp_width(label) - 4, 3), vbuf[:])
+	}
+	content := disp_width(mark) + disp_width(label)
+	if value_cut != "" {
+		content += 2 + disp_width(value_cut)
+	}
+	bar := min(content + 2, width)
 	fb_at(b, y, x)
 	ink := false
 	if cursor {
@@ -1056,26 +1065,23 @@ dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, 
 	}
 	fb_str(b, mark)
 	fb_str(b, label)
-	used := disp_width(mark) + disp_width(label)
-	if !folder_row {
-		value_cut := cut_dot(value, max(width - used - 2, 3), vbuf[:])
-		gap := max(width - used - disp_width(value_cut) - 1, 1)
-		for _ in 0..<gap {
-			fb_str(b, " ")
-		}
+	if value_cut != "" {
+		fb_str(b, "  ")
 		if !cursor {
 			fb_fg(b, vcol)
 		}
 		fb_str(b, value_cut)
-		used += gap + disp_width(value_cut)
 	}
 	if ink {
 		fb_bg(b, vcol)
 	}
-	for _ in 0..<max(width - used, 0) {
+	for _ in 0..<max(bar - content, 0) {
 		fb_str(b, " ")
 	}
 	fb_reset(b)
+	for _ in 0..<max(width - bar, 0) {
+		fb_str(b, " ")
+	}
 }
 
 // dev_edit_draw paints the modal number editor panel over the page.
@@ -1099,12 +1105,12 @@ dev_edit_draw :: proc(b: ^FB, cols, rows: int) {
 	fb_reset(b)
 }
 
-// dev_cell draws one padded cell. The cursor paints a colored bar
-// with dark ink when the entry carries a color, otherwise reverse
-// video.
+// dev_cell draws one padded cell. The cursor paints one bar that ends
+// two columns past the content like the BM cursor padding.
 dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bool, bg: int) {
 	nbuf: [512]u8
 	shown := cut_dot(line, width, nbuf[:])
+	bar := min(disp_width(shown) + 2, width)
 	fb_at(b, y, x)
 	if cursor {
 		if bg != 0 {
@@ -1120,10 +1126,13 @@ dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bo
 		fb_str(b, "\x1b[2m")
 	}
 	fb_str(b, shown)
-	for i in disp_width(shown)..<width {
+	for i in disp_width(shown)..<bar {
 		fb_str(b, " ")
 	}
 	fb_reset(b)
+	for _ in bar..<width {
+		fb_str(b, " ")
+	}
 }
 
 // hint_draw paints one centered hint line on the bottom row.
@@ -1165,7 +1174,7 @@ dev_hint :: proc(b: ^FB, cols, rows: int) {
 		}
 	} else if dev_dir == 2 {
 		items = [4][2]string{
-			{"j/k, arrows", "move"},
+			{"wasd, jk, arrows", "move"},
 			{"Enter/Space", "select"},
 			{"h/q", "back"},
 			{"", ""},

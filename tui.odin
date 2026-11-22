@@ -472,7 +472,7 @@ menu_select :: proc() -> MenuChoice {
 				fb_str(&b, cut_text(opt.hint, width - 27, hbuf[:]))
 				fb_reset(&b)
 			}
-			ui_hint(&b, "wasd/jk/arrows select  Enter confirm  q quit")
+			ui_hint(&b, "wasd, jk, arrows select  Enter confirm  q quit")
 			fb_end(&b)
 			need_draw = false
 		}
@@ -665,7 +665,7 @@ form_join :: proc() -> FormResult {
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, "wasd/jk/arrows move  Enter confirm  Esc back")
+			ui_hint(&b, "wasd, jk, arrows move  Enter confirm  Esc back")
 			fb_end(&b)
 			need_draw = false
 		}
@@ -788,7 +788,7 @@ form_create :: proc() -> FormResult {
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, "wasd/jk/arrows move  Enter confirm  Esc back")
+			ui_hint(&b, "wasd, jk, arrows move  Enter confirm  Esc back")
 			fb_end(&b)
 			need_draw = false
 		}

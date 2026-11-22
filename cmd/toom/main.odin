@@ -29,6 +29,8 @@ print_help :: proc() {
 		{"-f <n>", "frames per second, 1 to 60, default 15"},
 		{"-b <n>", "video bitrate in kbps, 50 to 4000, default 300"},
 		{"--enc <name>", "encoder backend auto x264 vaapi nvenc"},
+		{"--join <code>", "join a meeting directly, skip the forms"},
+		{"--name <name>", "display name used by --join"},
 		{"-h, --help", "show help"},
 		{"--version", "show version"},
 	}
@@ -87,10 +89,12 @@ main :: proc() {
 	toom.config_load()
 	toom.config_apply()
 
+	join_code := ""
+	join_name := ""
 	i := 1
 	for i < len(os.args) {
 		a := os.args[i]
-		need := a == "-d" || a == "-s" || a == "-f" || a == "-b" || a == "--enc"
+		need := a == "-d" || a == "-s" || a == "-f" || a == "-b" || a == "--enc" || a == "--join" || a == "--name"
 		if need {
 			i += 1
 			if i >= len(os.args) {
@@ -127,6 +131,10 @@ main :: proc() {
 				os.exit(1)
 			}
 			toom.enc_kbps = v
+		} else if a == "--join" {
+			join_code = os.args[i]
+		} else if a == "--name" {
+			join_name = os.args[i]
 		} else if a == "--enc" {
 			switch os.args[i] {
 			case "auto":
@@ -153,6 +161,26 @@ main :: proc() {
 	toom.term_sig_setup()
 	toom.term_enter_full()
 	thread.create_and_start(toom.input_thread)
+
+	if join_code != "" {
+		mc, ok := toom.meeting_decode(join_code)
+		if !ok {
+			toom.term_leave_full()
+			fmt.eprintln("[-] invalid meeting code")
+			os.exit(1)
+		}
+		name := join_name
+		if name == "" {
+			name = toom.app_cfg.name
+		}
+		err := toom.conference_run(mc.H, mc.R, name, mc.K, false, toom.cam_default, toom.mic_default)
+		toom.term_leave_full()
+		if err != "" {
+			fmt.eprintf("[-] %s\n", err)
+			os.exit(1)
+		}
+		return
+	}
 
 	for {
 		choice := toom.menu_select()
