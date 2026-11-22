@@ -419,6 +419,7 @@ cam_pipeline_start :: proc() -> bool {
 	if sync.atomic_load(&cam_ready) != 0 {
 		return true
 	}
+	cam_auto_pick()
 	if !cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
 		return false
 	}

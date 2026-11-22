@@ -35,7 +35,7 @@ dev_row_kinds := [3][]DevKind{
 	{.Cursor, .Target},
 }
 
-// DevEnt is one option inside a modal picker.
+// DevEnt is one entry inside an option column.
 DevEnt :: struct {
 	name:       string,
 	dev:        string,
@@ -53,32 +53,36 @@ DevPick :: struct {
 	use:  string,
 }
 
-// DevSub is the modal single choice picker.
-DevSub :: struct {
-	open:  bool,
-	kind:  DevKind,
-	title: string,
-	opts:  [dynamic]DevEnt,
-	cur:   int,
-	off:   int,
+// DevCol is the option column drilled into from a picker row.
+DevCol :: struct {
+	open: bool,
+	kind: DevKind,
+	opts: [dynamic]DevEnt,
+	cur:  int,
+	off:  int,
 }
 
 // DevEdit is the modal number editor.
 DevEdit :: struct {
-	open:  bool,
-	kind:  DevKind,
-	title: string,
-	text:  [dynamic]rune,
-	cur:   int,
+	open: bool,
+	kind: DevKind,
+	text: [dynamic]rune,
+	cur:  int,
 }
 
-dev_dir:   int
-dev_row:   [3]int
-dev_pick:  [2]DevPick
-dev_sub:   DevSub
-dev_edit:  DevEdit
-dev_cam_name:    string
+dev_dir:        int
+dev_row:        [3]int
+dev_pick:       [2]DevPick
+dev_col:        DevCol
+dev_edit:       DevEdit
+dev_cam_name:   string
 dev_target_name: string
+
+// dev_prev caches the preview column of the picker row under the
+// cursor so browsing rows never re-enumerates devices.
+dev_prev_kind: DevKind
+dev_prev_have: bool
+dev_prev_opts: [dynamic]DevEnt
 
 // cstr_dup copies a NUL terminated char buffer into a string.
 cstr_dup :: proc(chars: rawptr) -> string {
@@ -235,6 +239,29 @@ cam_set :: proc(path: string) {
 	cam_dev_owned = true
 }
 
+// cam_auto_pick installs the first available camera when the current
+// camera path cannot be opened and no camera was picked by hand.
+cam_auto_pick :: proc() {
+	if dev_cam_name != "" {
+		return
+	}
+	buf: [256]u8
+	n := min(len(cam_dev), 255)
+	copy(buf[:], cam_dev[:n])
+	buf[n] = 0
+	fd := cam_open_dev(cast(cstring)&buf[0])
+	if fd >= 0 {
+		cam_close(fd)
+		return
+	}
+	cams := cam_enum_devs()
+	defer dev_list_free(&cams)
+	if len(cams) > 0 {
+		cam_set(cams[0].dev)
+		dev_set_name(&dev_cam_name, cams[0].name)
+	}
+}
+
 // dev_audio_id returns the picked audio device id of one direction.
 // ok is false when the system default is picked.
 dev_audio_id :: proc(capture: bool) -> (ma.device_id, bool) {
@@ -276,66 +303,57 @@ dev_win_refresh :: proc() {
 	}
 }
 
-// dev_sub_open builds the options of one picker and shows it.
-dev_sub_open :: proc(kind: DevKind) {
-	dev_sub.kind = kind
-	dev_sub.open = true
-	dev_sub.cur = 0
-	dev_sub.off = 0
-	dev_list_free(&dev_sub.opts)
+// dev_sub_build fills one option list and returns the picked index.
+dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
+	picked := 0
 	#partial switch kind {
 	case .AudioIn:
-		dev_sub.title = "input device"
-		opts := audio_enum_devs(true)
-		for &e in opts {
+		src := audio_enum_devs(true)
+		for &e in src {
 			e.picked = (e.is_default && dev_pick[0].use == "") || (!e.is_default && id_str(&e.id) == dev_pick[0].use)
 			if e.picked {
-				dev_sub.cur = len(dev_sub.opts)
+				picked = len(opts^)
 			}
-			append(&dev_sub.opts, e)
+			append(opts, e)
 		}
-		delete(opts)
+		delete(src)
 	case .AudioOut:
-		dev_sub.title = "output device"
-		opts := audio_enum_devs(false)
-		for &e in opts {
+		src := audio_enum_devs(false)
+		for &e in src {
 			e.picked = (e.is_default && dev_pick[1].use == "") || (!e.is_default && id_str(&e.id) == dev_pick[1].use)
 			if e.picked {
-				dev_sub.cur = len(dev_sub.opts)
+				picked = len(opts^)
 			}
-			append(&dev_sub.opts, e)
+			append(opts, e)
 		}
-		delete(opts)
+		delete(src)
 	case .CamDev:
-		dev_sub.title = "camera device"
-		opts := cam_enum_devs()
-		for &e in opts {
+		src := cam_enum_devs()
+		for &e in src {
 			e.picked = e.dev == cam_dev
 			if e.picked {
-				dev_sub.cur = len(dev_sub.opts)
+				picked = len(opts^)
 			}
-			append(&dev_sub.opts, e)
+			append(opts, e)
 		}
-		delete(opts)
+		delete(src)
 	case .Colors:
-		dev_sub.title = "color count"
 		for lv, i in CONF_COLORS {
-			append(&dev_sub.opts, DevEnt{name = strings.clone(tprintf("%d colors", lv)), picked = i == color_idx})
+			append(opts, DevEnt{name = strings.clone(tprintf("%d colors", lv)), picked = i == color_idx})
 			if i == color_idx {
-				dev_sub.cur = len(dev_sub.opts) - 1
+				picked = len(opts^) - 1
 			}
 		}
 	case .Target:
-		dev_sub.title = "share target"
 		outs := screen_outputs()
 		for o in outs {
-			append(&dev_sub.opts, DevEnt{
+			append(opts, DevEnt{
 				name = strings.clone(tprintf("output: %s", o)),
 				dev = strings.clone(o),
 				picked = share_window == 0 && share_output == o,
 			})
-			if dev_sub.opts[len(dev_sub.opts) - 1].picked {
-				dev_sub.cur = len(dev_sub.opts) - 1
+			if opts[len(opts^) - 1].picked {
+				picked = len(opts^) - 1
 			}
 		}
 		delete(outs)
@@ -345,15 +363,36 @@ dev_sub_open :: proc(kind: DevKind) {
 			if label == "" {
 				label = w.app
 			}
-			append(&dev_sub.opts, DevEnt{
+			append(opts, DevEnt{
 				name = strings.clone(tprintf("window: %s", label)),
 				win = w.id,
 				picked = share_window != 0 && share_window == w.id,
 			})
-			if dev_sub.opts[len(dev_sub.opts) - 1].picked {
-				dev_sub.cur = len(dev_sub.opts) - 1
+			if opts[len(opts^) - 1].picked {
+				picked = len(opts^) - 1
 			}
 		}
+	}
+	return picked
+}
+
+// dev_col_open builds the option column of one picker row and moves
+// the column focus into it.
+dev_col_open :: proc(kind: DevKind) {
+	dev_col.kind = kind
+	dev_col.open = true
+	dev_col.off = 0
+	dev_list_free(&dev_col.opts)
+	dev_col.cur = dev_sub_build(kind, &dev_col.opts)
+	dev_dir = 2
+}
+
+// dev_col_close leaves the option column and releases its entries.
+dev_col_close :: proc() {
+	dev_col.open = false
+	dev_list_free(&dev_col.opts)
+	if dev_dir > 1 {
+		dev_dir = 1
 	}
 }
 
@@ -381,14 +420,15 @@ dev_set_name :: proc(dst: ^string, s: string) {
 	dst^ = strings.clone(s)
 }
 
-// dev_sub_apply installs the picked option and closes the picker.
-dev_sub_apply :: proc() {
-	if dev_sub.cur < 0 || dev_sub.cur >= len(dev_sub.opts) {
+// dev_col_apply installs the picked option. The cursor stays on the
+// entry so single choices never move the browsing position.
+dev_col_apply :: proc() {
+	if dev_col.cur < 0 || dev_col.cur >= len(dev_col.opts) {
 		return
 	}
-	e := &dev_sub.opts[dev_sub.cur]
+	e := &dev_col.opts[dev_col.cur]
 	sharing := sync.atomic_load(&screen_send) != 0
-	#partial switch dev_sub.kind {
+	#partial switch dev_col.kind {
 	case .AudioIn:
 		dev_set_pick(0, e)
 	case .AudioOut:
@@ -397,7 +437,7 @@ dev_sub_apply :: proc() {
 		cam_set(e.dev)
 		dev_set_name(&dev_cam_name, e.name)
 	case .Colors:
-		color_idx = dev_sub.cur
+		color_idx = dev_col.cur
 		colors_apply()
 		toast_show(tprintf("colors %d", colors_now()), 0)
 	case .Target:
@@ -421,7 +461,9 @@ dev_sub_apply :: proc() {
 			toast_show(tprintf("share target %s", e.name), 0)
 		}
 	}
-	dev_sub.open = false
+	for i in 0..<len(dev_col.opts) {
+		dev_col.opts[i].picked = i == dev_col.cur
+	}
 }
 
 // dev_edit_open shows the number editor for one value row.
@@ -432,7 +474,6 @@ dev_edit_open :: proc(kind: DevKind) {
 	clear(&dev_edit.text)
 	#partial switch kind {
 	case .Volume:
-		dev_edit.title = "volume"
 		for r in tprintf("%d", vol_pct()) {
 			append(&dev_edit.text, r)
 		}
@@ -578,6 +619,16 @@ dev_row_value :: proc(kind: DevKind) -> (string, int) {
 	return "", C_TEXT
 }
 
+// dev_row_folder reports whether one settings row drills into an
+// option column like a folder.
+dev_row_folder :: proc(kind: DevKind) -> bool {
+	#partial switch kind {
+	case .Colors, .AudioIn, .AudioOut, .CamDev, .Target:
+		return true
+	}
+	return false
+}
+
 // dev_group_marked reports whether one group holds a concrete picked
 // choice instead of a system default.
 dev_group_marked :: proc(folder: int) -> bool {
@@ -641,12 +692,12 @@ cut_dot :: proc(s: string, width: int, buf: []u8) -> string {
 	return string(buf[:n + 3])
 }
 
-// dev_run opens the settings page: a group column on the left and the
-// settings rows of the focused group on the right. Switch rows toggle
-// in place, value rows open a number editor and picker rows open a
-// modal single choice list.
+// dev_run opens the settings page as a Miller column browser like the
+// BM library: the group column, the settings rows of the group and an
+// option column drilled into from a picker row. A picker row also
+// previews its options in a dimmed column on the right.
 dev_run :: proc() {
-	inside := false
+	dev_dir = 0
 	need_draw := true
 	for {
 		if need_draw {
@@ -661,10 +712,7 @@ dev_run :: proc() {
 				need_draw = false
 				continue
 			}
-			dev_draw(&b, dev_dir, inside, cols, rows)
-			if dev_sub.open {
-				dev_sub_draw(&b, cols, rows)
-			}
+			dev_draw(&b, cols, rows)
 			if dev_edit.open {
 				dev_edit_draw(&b, cols, rows)
 			}
@@ -684,103 +732,114 @@ dev_run :: proc() {
 			dev_edit_key(k)
 			continue
 		}
-		if dev_sub.open {
-			#partial switch k.kind {
-			case .Quit:
-				dev_sub.open = false
-			case .Up:
-				if dev_sub.cur > 0 {
-					dev_sub.cur -= 1
-				}
-			case .Down:
-				if dev_sub.cur + 1 < len(dev_sub.opts) {
-					dev_sub.cur += 1
-				}
-			case .Enter:
-				dev_sub_apply()
-			case .Char:
-				if k.ch == 'q' || k.ch == 'Q' {
-					dev_sub.open = false
-				} else if k.ch == 'k' || k.ch == 'K' {
-					if dev_sub.cur > 0 {
-						dev_sub.cur -= 1
-					}
-				} else if k.ch == 'j' || k.ch == 'J' {
-					if dev_sub.cur + 1 < len(dev_sub.opts) {
-						dev_sub.cur += 1
-					}
-				}
-			}
-			continue
-		}
 		#partial switch k.kind {
 		case .Quit:
-			return
-		case .Tab:
-			inside = !inside
-		case .Left:
-			inside = false
-		case .Right:
-			inside = true
-		case .Up:
-			dev_move(dev_dir, inside, -1)
-		case .Down:
-			dev_move(dev_dir, inside, 1)
-		case .Enter:
-			if !inside {
-				inside = true
-			} else {
-				dev_row_enter(dev_dir)
+			if !dev_back() {
+				return
 			}
+		case .Left:
+			_ = dev_back()
+		case .Right:
+			dev_fwd()
+		case .Up:
+			dev_move(-1)
+		case .Down:
+			dev_move(1)
+		case .Enter:
+			dev_enter()
 		case .Char:
 			switch k.ch {
 			case 'q', 'Q':
-				return
-			case 'h', 'H':
-				inside = false
-			case 'l', 'L':
-				inside = true
-			case 'j', 'J':
-				dev_move(dev_dir, inside, 1)
-			case 'k', 'K':
-				dev_move(dev_dir, inside, -1)
-			case ' ':
-				if !inside {
-					inside = true
-				} else {
-					dev_row_enter(dev_dir)
+				if !dev_back() {
+					return
 				}
+			case 'h', 'H':
+				_ = dev_back()
+			case 'l', 'L':
+				dev_fwd()
+			case 'j', 'J':
+				dev_move(1)
+			case 'k', 'K':
+				dev_move(-1)
+			case ' ':
+				dev_enter()
 			}
 		}
 	}
 }
 
-// dev_move shifts the cursor of the group column or the row list.
-dev_move :: proc(folder: int, inside: bool, delta: int) {
-	if !inside {
-		dev_dir = (folder + delta + len(device_folders)) % len(device_folders)
+// dev_back steps one column out and reports whether the page stays
+// open.
+dev_back :: proc() -> bool {
+	if dev_dir == 2 {
+		dev_col_close()
+		return true
+	}
+	if dev_dir == 1 {
+		dev_dir = 0
+		return true
+	}
+	return false
+}
+
+// dev_fwd steps one column deeper where the focused entry allows it.
+dev_fwd :: proc() {
+	if dev_dir == 0 {
+		dev_dir = 1
 		return
 	}
-	n := len(dev_row_kinds[folder])
-	if n > 0 {
-		dev_row[folder] = (dev_row[folder] + delta + n) % n
+	if dev_dir == 1 {
+		kind := dev_row_kinds[dev_focus_folder][dev_row[dev_focus_folder]]
+		if dev_row_folder(kind) {
+			dev_col_open(kind)
+		}
 	}
 }
 
-// dev_row_enter applies one Enter or Space on the focused row.
-dev_row_enter :: proc(folder: int) {
-	idx := dev_row[folder]
-	if idx < 0 || idx >= len(dev_row_kinds[folder]) {
+dev_focus_folder: int
+
+// dev_move shifts the cursor of the focused column.
+dev_move :: proc(delta: int) {
+	if dev_dir == 0 {
+		dev_focus_folder = (dev_focus_folder + delta + len(device_folders)) % len(device_folders)
+		if dev_col.open {
+			dev_col_close()
+		}
 		return
 	}
-	kind := dev_row_kinds[folder][idx]
-	switch kind {
+	if dev_dir == 1 {
+		n := len(dev_row_kinds[dev_focus_folder])
+		if n > 0 {
+			dev_row[dev_focus_folder] = (dev_row[dev_focus_folder] + delta + n) % n
+		}
+		return
+	}
+	n := len(dev_col.opts)
+	if n > 0 {
+		dev_col.cur = (dev_col.cur + delta + n) % n
+	}
+}
+
+// dev_enter applies one Enter or Space on the focused entry.
+dev_enter :: proc() {
+	if dev_dir == 0 {
+		dev_dir = 1
+		return
+	}
+	if dev_dir == 2 {
+		dev_col_apply()
+		return
+	}
+	kind := dev_row_kinds[dev_focus_folder][dev_row[dev_focus_folder]]
+	if dev_row_folder(kind) {
+		dev_col_open(kind)
+		return
+	}
+	#partial switch kind {
 	case .Mic, .Spk, .DeskShare, .Cam, .Mirror, .Cursor, .Layout:
 		dev_toggle(kind)
 	case .Volume:
 		dev_edit_open(kind)
-	case .Colors, .AudioIn, .AudioOut, .CamDev, .Target:
-		dev_sub_open(kind)
 	}
 }
 
@@ -812,29 +871,39 @@ dev_edit_key :: proc(k: Key) {
 	}
 }
 
-// dev_draw paints the group column and the settings rows of one
-// group.
-dev_draw :: proc(b: ^FB, folder: int, inside: bool, cols, rows: int) {
+// dev_draw paints the Miller columns: groups, settings rows and the
+// option column or its preview.
+dev_draw :: proc(b: ^FB, cols, rows: int) {
 	fb_at(b, 1, max((cols - 7) / 2, 1))
 	fb_str(b, "\x1b[1m")
 	fb_fg(b, C_BLUE)
 	fb_str(b, "Settings")
 	fb_reset(b)
 
-	folder_w := 0
+	nbuf: [512]u8
+	folder := dev_focus_folder
+	kinds := dev_row_kinds[folder]
+
+	need0 := 0
 	for name, i in device_folders {
-		w := disp_width("▸ ") + disp_width(name) + 1
+		w := disp_width("▸ ") + disp_width(name) + 2
 		if dev_group_marked(i) {
 			w += 1
 		}
-		folder_w = max(folder_w, w)
+		need0 = max(need0, w)
 	}
-	folder_w = min(folder_w + 1, cols / 2)
-	folder_x := 2
-	list_x := folder_x + folder_w + 1
-	list_w := max(cols - list_x - 1, 10)
+	need1 := 0
+	for kind in kinds {
+		v, _ := dev_row_value(kind)
+		need1 = max(need1, disp_width(dev_row_label(kind)) + disp_width(v) + 4)
+	}
+	w0 := min(need0, max(cols / 4, 8))
+	w1 := min(need1, max(cols / 3, 12))
+	x0 := 2
+	x1 := x0 + w0 + 1
+	x2 := x1 + w1 + 1
+	avail2 := max(cols - x2, 8)
 
-	nbuf: [512]u8
 	for idx in 0..<len(device_folders) {
 		y := idx + 3
 		name := device_folders[idx]
@@ -842,18 +911,57 @@ dev_draw :: proc(b: ^FB, folder: int, inside: bool, cols, rows: int) {
 		if dev_group_marked(idx) {
 			mark = "✓ "
 		}
-		line := tprintf("%s%s", mark, cut_dot(tprintf("%s/", name), folder_w - disp_width(mark), nbuf[:]))
-		cursor := idx == folder && !inside
-		dev_cell(b, folder_x, y, folder_w, line, cursor, false, inside)
+		line := tprintf("%s%s", mark, cut_dot(name, w0 - disp_width(mark) - 1, nbuf[:]))
+		dev_cell(b, x0, y, w0, line, idx == folder && dev_dir == 0, false, dev_dir > 0)
 	}
 
-	kinds := dev_row_kinds[folder]
 	for kind, i in kinds {
 		y := i + 3
 		label := dev_row_label(kind)
 		value, vcol := dev_row_value(kind)
-		cursor := i == dev_row[folder] && inside
-		dev_row_draw(b, list_x, y, list_w, label, value, vcol, cursor, !inside)
+		cursor := i == dev_row[folder] && dev_dir == 1
+		dev_row_draw(b, x1, y, w1, label, value, vcol, cursor, dev_dir > 1)
+	}
+
+	if dev_col.open {
+		dev_col_draw(b, x2, 3, avail2, rows - 4, dev_col.opts[:], dev_col.cur, dev_col.off, dev_dir == 2, false)
+		return
+	}
+
+	kind := kinds[dev_row[folder]]
+	if !dev_row_folder(kind) {
+		return
+	}
+	if !dev_prev_have || dev_prev_kind != kind {
+		dev_list_free(&dev_prev_opts)
+		_ = dev_sub_build(kind, &dev_prev_opts)
+		dev_prev_kind = kind
+		dev_prev_have = true
+	}
+	dev_col_draw(b, x2, 3, avail2, rows - 4, dev_prev_opts[:], -1, 0, false, true)
+}
+
+// dev_col_draw paints one option column. A negative cursor draws the
+// dimmed preview variant without a focus bar.
+dev_col_draw :: proc(b: ^FB, x, y, width, list_h: int, opts: []DevEnt, cursor, offset: int, focused, dim: bool) {
+	nbuf: [512]u8
+	off := offset
+	if cursor >= 0 {
+		off = scroll_offset(offset, cursor, list_h)
+	}
+	for row in 0..<list_h {
+		idx := off + row
+		if idx >= len(opts) {
+			break
+		}
+		e := opts[idx]
+		mark := "  "
+		if e.picked {
+			mark = "✓ "
+		}
+		line := tprintf("%s%s", mark, cut_dot(e.name, width - disp_width(mark), nbuf[:]))
+		is_cur := idx == cursor
+		dev_cell(b, x, y + row, width, line, is_cur && focused, e.picked, dim && !is_cur)
 	}
 }
 
@@ -889,72 +997,13 @@ dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, 
 	}
 }
 
-// dev_sub_draw paints the modal picker panel over the page.
-dev_sub_draw :: proc(b: ^FB, cols, rows: int) {
-	opts := dev_sub.opts
-	width := min(cols - 8, 60)
-	height := min(len(opts) + 4, rows - 4)
-	left := (cols - width) / 2 + 1
-	top := max((rows - height) / 2, 1)
-	ui_panel(b, top, left, width, height, dev_sub.title)
-	list_h := height - 3
-	dev_sub.off = scroll_offset(dev_sub.off, dev_sub.cur, list_h)
-	nbuf: [512]u8
-	for row in 0..<list_h {
-		idx := dev_sub.off + row
-		if idx >= len(opts) {
-			break
-		}
-		e := opts[idx]
-		mark := "  "
-		if e.picked {
-			mark = "✓ "
-		}
-		line := tprintf("%s%s", mark, cut_dot(e.name, width - 6 - disp_width(mark), nbuf[:]))
-		fb_at(b, top + 2 + row, left + 2)
-		if idx == dev_sub.cur {
-			fb_str(b, "\x1b[7m")
-		}
-		if e.picked {
-			fb_fg(b, C_GREEN)
-		}
-		fb_str(b, line)
-		for _ in disp_width(line)..<width - 4 {
-			fb_str(b, " ")
-		}
-		fb_reset(b)
-	}
-	thumb_size := 0
-	thumb_start := 0
-	if len(opts) > list_h {
-		thumb_size = max(list_h * list_h / len(opts), 1)
-		scroll_range := len(opts) - list_h
-		thumb_range := list_h - thumb_size
-		if scroll_range > 0 {
-			thumb_start = dev_sub.off * thumb_range / scroll_range
-		}
-	}
-	for i in 0..<list_h {
-		cell := "│"
-		if len(opts) <= list_h {
-			cell = " "
-		} else if i >= thumb_start && i < thumb_start + thumb_size {
-			cell = "┃"
-		}
-		fb_at(b, top + 2 + i, left + width - 1)
-		fb_fg(b, C_BORDER)
-		fb_str(b, cell)
-		fb_reset(b)
-	}
-}
-
 // dev_edit_draw paints the modal number editor panel over the page.
 dev_edit_draw :: proc(b: ^FB, cols, rows: int) {
 	width := min(cols - 8, 46)
 	height := 7
 	left := (cols - width) / 2 + 1
 	top := max((rows - height) / 2, 1)
-	ui_panel(b, top, left, width, height, dev_edit.title)
+	ui_panel(b, top, left, width, height, dev_row_label(dev_edit.kind))
 	fb_at(b, top + 2, left + 3)
 	fb_fg(b, C_DIM)
 	fb_str(b, "value")
@@ -965,6 +1014,27 @@ dev_edit_draw :: proc(b: ^FB, cols, rows: int) {
 	#partial switch dev_edit.kind {
 	case .Volume:
 		fb_str(b, "range 0 to 200")
+	}
+	fb_reset(b)
+}
+
+// dev_cell draws one padded cell with the reverse video cursor bar.
+dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bool) {
+	nbuf: [512]u8
+	shown := cut_dot(line, width, nbuf[:])
+	fb_at(b, y, x)
+	if chosen {
+		fb_fg(b, C_GREEN)
+	}
+	if cursor {
+		fb_str(b, "\x1b[7m")
+	}
+	if dim {
+		fb_str(b, "\x1b[2m")
+	}
+	fb_str(b, shown)
+	for i in disp_width(shown)..<width {
+		fb_str(b, " ")
 	}
 	fb_reset(b)
 }
@@ -981,11 +1051,11 @@ dev_hint :: proc(b: ^FB, cols, rows: int) {
 			{"Esc", "cancel"},
 			{"", ""},
 		}
-	} else if dev_sub.open {
+	} else if dev_dir == 2 {
 		items = [4][2]string{
 			{"j/k, arrows", "move"},
 			{"Enter", "select"},
-			{"q", "back"},
+			{"h/q", "back"},
 			{"", ""},
 		}
 	} else {
@@ -1017,25 +1087,4 @@ dev_hint :: proc(b: ^FB, cols, rows: int) {
 		fb_reset(b)
 		x += disp_width(it[0]) + 1 + disp_width(it[1]) + 4
 	}
-}
-
-// dev_cell draws one padded cell with the reverse video cursor bar.
-dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bool) {
-	nbuf: [512]u8
-	shown := cut_dot(line, width, nbuf[:])
-	fb_at(b, y, x)
-	if chosen {
-		fb_fg(b, C_GREEN)
-	}
-	if cursor {
-		fb_str(b, "\x1b[7m")
-	}
-	if dim {
-		fb_str(b, "\x1b[2m")
-	}
-	fb_str(b, shown)
-	for i in disp_width(shown)..<width {
-		fb_str(b, " ")
-	}
-	fb_reset(b)
 }
