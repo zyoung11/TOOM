@@ -144,12 +144,12 @@ conf_caption :: proc(b: ^FB, info: CapInfo) {
 // always red so every switch row looks the same.
 state_word :: proc(enabled, active: bool) -> (string, int) {
 	if !enabled {
-		return "off", C_RED
+		return tr("off", "关"), C_RED
 	}
 	if active {
-		return "on", C_GREEN
+		return tr("on", "开"), C_GREEN
 	}
-	return "off", C_RED
+	return tr("off", "关"), C_RED
 }
 
 toast_buf: [96]u8

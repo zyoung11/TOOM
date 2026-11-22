@@ -33,6 +33,7 @@ AppConfig :: struct {
 	spk_default:   bool   `json:"spk_default"`,
 	cam_default:   bool   `json:"cam_default"`,
 	canvas_width:  int    `json:"canvas_width"`,
+	language:      string `json:"language"`,
 }
 
 app_cfg: AppConfig
@@ -70,6 +71,7 @@ config_default :: proc() -> AppConfig {
 		spk_default = true,
 		cam_default = true,
 		canvas_width = 200,
+		language = strings.clone("en"),
 	}
 }
 
@@ -166,6 +168,10 @@ config_collect :: proc() {
 	app_cfg.spk_default = spk_default
 	app_cfg.cam_default = cam_default
 	app_cfg.canvas_width = canvas_width
+	config_set_str(&app_cfg.language, "en")
+	if lang_zh {
+		config_set_str(&app_cfg.language, "zh")
+	}
 }
 
 // config_apply installs the persisted settings as live defaults.
@@ -210,6 +216,7 @@ config_apply :: proc() {
 	if app_cfg.canvas_width >= 20 {
 		canvas_width = app_cfg.canvas_width
 	}
+	lang_zh = app_cfg.language == "zh"
 }
 
 // config_form_set stores the submitted form values. Empty values keep

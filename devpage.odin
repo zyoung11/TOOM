@@ -8,7 +8,8 @@ import "core:sync"
 import "core:unicode/utf8"
 import ma "../Aideo/miniaudio"
 
-device_folders := [3]string{"Sound", "Display", "Share"}
+// DEV_FOLDERS is the number of settings groups.
+DEV_FOLDERS :: 5
 
 // DevKind names one settings row and drives its behavior.
 DevKind :: enum u8 {
@@ -26,27 +27,28 @@ DevKind :: enum u8 {
 	CamDev,
 	WinTargets,
 	Target,
+	Lang,
 }
-
-// dev_session marks the meeting settings mode where the switches
-// control live session state instead of the join defaults.
-dev_session: bool
 
 // dev_row_kinds_session lists the settings rows of every group during
 // a meeting in display order.
-dev_row_kinds_session := [3][]DevKind{
+dev_row_kinds_session := [5][]DevKind{
+	{.Cam, .CamDev},
 	{.Mic, .Spk, .DeskShare, .Volume, .AudioIn, .AudioOut},
-	{.Cam, .Mirror, .Colors, .Layout, .CamDev},
+	{.Mirror, .Colors, .Layout},
 	{.Cursor, .WinTargets},
+	{.Lang},
 }
 
 // dev_row_kinds_menu lists the settings rows before a meeting. The
 // session switches show their join defaults here and system audio is
 // left out because it has no useful default.
-dev_row_kinds_menu := [3][]DevKind{
+dev_row_kinds_menu := [5][]DevKind{
+	{.Cam, .CamDev},
 	{.Mic, .Spk, .Volume, .AudioIn, .AudioOut},
-	{.Cam, .Mirror, .Colors, .Layout, .CamDev},
+	{.Mirror, .Colors, .Layout},
 	{.Cursor, .WinTargets},
+	{.Lang},
 }
 
 // dev_rows returns the settings rows of one group for the current
@@ -56,6 +58,21 @@ dev_rows :: proc(folder: int) -> []DevKind {
 		return dev_row_kinds_session[folder]
 	}
 	return dev_row_kinds_menu[folder]
+}
+
+// dev_folder_name returns the display name of one group.
+dev_folder_name :: proc(folder: int) -> string {
+	switch folder {
+	case 0:
+		return tr("Camera", "摄像头")
+	case 1:
+		return tr("Sound", "声音")
+	case 2:
+		return tr("Display", "画面")
+	case 3:
+		return tr("Share", "共享")
+	}
+	return tr("Language", "语言")
 }
 
 // DevEnt is one entry inside an option column.
@@ -93,8 +110,12 @@ DevEdit :: struct {
 	cur:  int,
 }
 
+// dev_session marks the meeting settings mode where the switches
+// control live session state instead of the join defaults.
+dev_session: bool
+
 dev_dir:        int
-dev_row:        [3]int
+dev_row:        [5]int
 dev_pick:       [2]DevPick
 dev_col:        DevCol
 dev_edit:       DevEdit
@@ -564,11 +585,13 @@ dev_toggle :: proc(kind: DevKind) {
 		}
 	case .WinTargets:
 		sync.atomic_store(&share_win_menu, 1 - sync.atomic_load(&share_win_menu))
-		v := "off"
+		v := tr("off", "关")
 		if sync.atomic_load(&share_win_menu) != 0 {
-			v = "on"
+			v = tr("on", "开")
 		}
-		toast_show(tprintf("windows listed %s", v), 0)
+		toast_show(tprintf("%s %s", tr("windows listed", "窗口列出"), v), 0)
+	case .Lang:
+		lang_zh = !lang_zh
 	}
 }
 
@@ -576,33 +599,35 @@ dev_toggle :: proc(kind: DevKind) {
 dev_row_label :: proc(kind: DevKind) -> string {
 	switch kind {
 	case .Mic:
-		return "microphone"
+		return tr("microphone", "麦克风")
 	case .Spk:
-		return "speaker"
+		return tr("speaker", "扬声器")
 	case .DeskShare:
-		return "system audio"
+		return tr("system audio", "系统音频")
 	case .Cam:
-		return "camera"
+		return tr("camera", "摄像头")
 	case .Mirror:
-		return "mirror"
+		return tr("mirror", "镜像")
 	case .Cursor:
-		return "cursor"
+		return tr("cursor", "光标")
 	case .Volume:
-		return "volume"
+		return tr("volume", "音量")
 	case .Colors:
-		return "colors"
+		return tr("colors", "色数")
 	case .Layout:
-		return "layout"
+		return tr("layout", "布局")
 	case .AudioIn:
-		return "input device"
+		return tr("input device", "输入设备")
 	case .AudioOut:
-		return "output device"
+		return tr("output device", "输出设备")
 	case .CamDev:
-		return "camera device"
+		return tr("camera device", "摄像头设备")
 	case .WinTargets:
-		return "windows"
+		return tr("windows", "窗口")
+	case .Lang:
+		return tr("language", "语言")
 	case .Target:
-		return "share target"
+		return tr("share target", "共享目标")
 	}
 	return ""
 }
@@ -613,37 +638,37 @@ dev_row_value :: proc(kind: DevKind) -> (string, int) {
 	switch kind {
 	case .Mic:
 		if !dev_session {
-			v := "off"
+			v := tr("off", "关")
 			c := C_RED
 			if mic_default {
-				v = "on"
+				v = tr("on", "开")
 				c = C_GREEN
 			}
-			return tprintf("default: %s", v), c
+			return tprintf("%s: %s", tr("default", "默认"), v), c
 		}
 		return state_word(mic_enabled, sync.atomic_load(&mic_mute) == 0)
 	case .Spk:
 		if !dev_session {
-			v := "off"
+			v := tr("off", "关")
 			c := C_RED
 			if spk_default {
-				v = "on"
+				v = tr("on", "开")
 				c = C_GREEN
 			}
-			return tprintf("default: %s", v), c
+			return tprintf("%s: %s", tr("default", "默认"), v), c
 		}
 		return state_word(audio_ok, sync.atomic_load(&spk_mute) == 0)
 	case .DeskShare:
 		return state_word(true, sync.atomic_load(&desk_send) != 0)
 	case .Cam:
 		if !dev_session {
-			v := "off"
+			v := tr("off", "关")
 			c := C_RED
 			if cam_default {
-				v = "on"
+				v = tr("on", "开")
 				c = C_GREEN
 			}
-			return tprintf("default: %s", v), c
+			return tprintf("%s: %s", tr("default", "默认"), v), c
 		}
 		return state_word(true, sync.atomic_load(&send_video) != 0)
 	case .Mirror:
@@ -656,20 +681,25 @@ dev_row_value :: proc(kind: DevKind) -> (string, int) {
 		return tprintf("%d", colors_now()), C_YELLOW
 	case .Layout:
 		if screen_owner != 0 || screen_local_on() {
-			return "share", C_MAUVE
+			return tr("share", "共享"), C_MAUVE
 		}
 		if conf_mode == .Focus {
-			return "focus", C_MAUVE
+			return tr("focus", "聚焦"), C_MAUVE
 		}
-		return "grid", C_MAUVE
+		return tr("grid", "网格"), C_MAUVE
+	case .Lang:
+		if lang_zh {
+			return "中文", C_GREEN
+		}
+		return "english", C_GREEN
 	case .AudioIn:
 		if dev_pick[0].name == "" {
-			return "System default", C_GREEN
+			return tr("System default", "系统默认"), C_GREEN
 		}
 		return dev_pick[0].name, C_GREEN
 	case .AudioOut:
 		if dev_pick[1].name == "" {
-			return "System default", C_GREEN
+			return tr("System default", "系统默认"), C_GREEN
 		}
 		return dev_pick[1].name, C_GREEN
 	case .CamDev:
@@ -866,7 +896,7 @@ dev_focus_folder: int
 // dev_move shifts the cursor of the focused column.
 dev_move :: proc(delta: int) {
 	if dev_dir == 0 {
-		dev_focus_folder = (dev_focus_folder + delta + len(device_folders)) % len(device_folders)
+		dev_focus_folder = (dev_focus_folder + delta + DEV_FOLDERS) % DEV_FOLDERS
 		if dev_col.open {
 			dev_col_close()
 		}
@@ -901,7 +931,7 @@ dev_enter :: proc() {
 		return
 	}
 	#partial switch kind {
-	case .Mic, .Spk, .DeskShare, .Cam, .Mirror, .Cursor, .Layout, .WinTargets:
+	case .Mic, .Spk, .DeskShare, .Cam, .Mirror, .Cursor, .Layout, .WinTargets, .Lang:
 		dev_toggle(kind)
 	case .Volume:
 		dev_edit_open(kind)
@@ -950,17 +980,22 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 	kinds := dev_rows(folder)
 
 	need0 := 0
-	for name in device_folders {
+	for i in 0..<DEV_FOLDERS {
+		name := dev_folder_name(i)
 		need0 = max(need0, disp_width("▸ ") + disp_width(name) + 1)
+	}
+	label_w := 0
+	for kind in kinds {
+		label_w = max(label_w, disp_width(dev_row_label(kind)))
 	}
 	need1 := 0
 	for kind in kinds {
-		w := disp_width("▸ ") + disp_width(dev_row_label(kind)) + 2
+		w := disp_width("▸ ") + label_w + 2
 		if !dev_row_folder(kind) {
 			v, _ := dev_row_value(kind)
 			w += disp_width(v) + 2
 		}
-		need1 = max(need1, w + 2)
+		need1 = max(need1, w)
 	}
 	w0 := min(need0, max(cols / 4, 8))
 	w1 := min(need1, max(cols / 3, 12))
@@ -969,9 +1004,9 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 	x2 := x1 + w1 + 1
 	avail2 := max(cols - x2, 8)
 
-	for idx in 0..<len(device_folders) {
+	for idx in 0..<DEV_FOLDERS {
 		y := idx + 3
-		line := cut_dot(tprintf("▸ %s", device_folders[idx]), w0 - 1, nbuf[:])
+		line := cut_dot(tprintf("▸ %s", dev_folder_name(idx)), w0 - 1, nbuf[:])
 		dev_cell(b, x0, y, w0, line, idx == folder && dev_dir == 0, false, dev_dir > 0, 0)
 	}
 
@@ -980,7 +1015,7 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 		label := dev_row_label(kind)
 		value, vcol := dev_row_value(kind)
 		cursor := i == dev_row[folder] && dev_dir == 1
-		dev_row_draw(b, x1, y, w1, label, value, vcol, cursor, dev_dir > 1, dev_row_folder(kind))
+		dev_row_draw(b, x1, y, w1, label_w, label, value, vcol, cursor, dev_dir != 1, dev_row_folder(kind))
 	}
 
 	if dev_col.open {
@@ -1030,23 +1065,25 @@ dev_col_draw :: proc(b: ^FB, x, y, width, list_h: int, opts: []DevEnt, cursor, o
 }
 
 // dev_row_draw paints one settings row. Folder rows carry a drill
-// marker and hide the value. The cursor paints one bar in the value
-// color that ends two columns past the content like the BM cursor
-// padding.
-dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, cursor, dim, folder_row: bool) {
+// marker and hide the value. Labels right align into one column and
+// the values start at one shared tab stop like the form pages. The
+// cursor paints one bar that ends two columns past the content like
+// the BM cursor padding.
+dev_row_draw :: proc(b: ^FB, x, y, width, label_w: int, label, value: string, vcol: int, cursor, dim, folder_row: bool) {
 	nbuf: [512]u8
 	vbuf: [512]u8
 	mark := "  "
 	if folder_row {
 		mark = "▸ "
 	}
+	value_x := disp_width(mark) + label_w + 2
 	value_cut := ""
 	if !folder_row {
-		value_cut = cut_dot(value, max(width - disp_width(mark) - disp_width(label) - 4, 3), vbuf[:])
+		value_cut = cut_dot(value, max(width - value_x - 2, 3), vbuf[:])
 	}
 	content := disp_width(mark) + disp_width(label)
 	if value_cut != "" {
-		content += 2 + disp_width(value_cut)
+		content = value_x + disp_width(value_cut)
 	}
 	bar := min(content + 2, width)
 	fb_at(b, y, x)
@@ -1066,7 +1103,9 @@ dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, 
 	fb_str(b, mark)
 	fb_str(b, label)
 	if value_cut != "" {
-		fb_str(b, "  ")
+		for _ in 0..<(value_x - disp_width(mark) - disp_width(label)) {
+			fb_str(b, " ")
+		}
 		if !cursor {
 			fb_fg(b, vcol)
 		}
@@ -1167,23 +1206,23 @@ dev_hint :: proc(b: ^FB, cols, rows: int) {
 	items: [4][2]string
 	if dev_edit.open {
 		items = [4][2]string{
-			{"0-9", "type value"},
-			{"Enter", "confirm"},
-			{"Esc", "cancel"},
+			{"0-9", tr("type value", "输入数值")},
+			{"Enter", tr("confirm", "确认")},
+			{"Esc", tr("cancel", "取消")},
 			{"", ""},
 		}
 	} else if dev_dir == 2 {
 		items = [4][2]string{
-			{"wasd, jk, arrows", "move"},
-			{"Enter/Space", "select"},
-			{"h/q", "back"},
+			{"wasd, jk, arrows", tr("move", "移动")},
+			{"Enter/Space", tr("select", "选择")},
+			{"h/q", tr("back", "返回")},
 			{"", ""},
 		}
 	} else {
 		items = [4][2]string{
-			{"wasd, hjkl, arrows", "move"},
-			{"Enter/Space", "open or toggle"},
-			{"q", "back"},
+			{"wasd, hjkl, arrows", tr("move", "移动")},
+			{"Enter/Space", tr("open or toggle", "打开或切换")},
+			{"q", tr("back", "返回")},
 			{"", ""},
 		}
 	}

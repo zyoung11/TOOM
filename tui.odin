@@ -14,8 +14,8 @@ C_GREEN  :: 0xa6da95
 C_YELLOW :: 0xeed49f
 C_RED    :: 0xed8796
 C_TEXT   :: 0xcbcfd6
-C_DIM    :: 0x6e7381
-C_BORDER :: 0x555a6b
+C_DIM    :: 0x9ca2b4
+C_BORDER :: 0x787f94
 C_INK    :: 0x1e2030
 C_BG     :: 0x24273a
 C_FIELD  :: 0x1e2030
@@ -172,11 +172,12 @@ tprintf :: proc(fmtstr: string, args: ..any) -> string {
 	return fmt.tprintf(fmtstr, ..args)
 }
 
-// ui_panel draws a bordered card with the title in the top border and
-// fills the interior with the panel background.
+// ui_panel draws a bordered card with the title in the top border.
+// The frame and the title are bold.
 ui_panel :: proc(b: ^FB, row, col, width, height: int, title: string) {
 	inner := width - 2
 	fb_at(b, row, col)
+	fb_str(b, "\x1b[1m")
 	fb_fg(b, C_BORDER)
 	tbuf: [256]u8
 	tcut := cut_text(title, max(width - 8, 4), tbuf[:])
@@ -207,16 +208,11 @@ ui_panel :: proc(b: ^FB, row, col, width, height: int, title: string) {
 	fb_reset(b)
 }
 
-// ui_hint draws the centered footer hint line on the last row.
-ui_hint :: proc(b: ^FB, hint: string) {
+// ui_hint draws the centered footer hint line with the same style as
+// the settings hints: yellow keys and dim descriptions.
+ui_hint :: proc(b: ^FB, items: [4][2]string) {
 	cols, rows := term_size()
-	x := max((cols - disp_width(hint)) / 2, 1)
-	fb_at(b, rows, 1)
-	fb_str(b, "\x1b[K")
-	fb_at(b, rows, x)
-	fb_fg(b, C_DIM)
-	fb_str(b, hint)
-	fb_reset(b)
+	hint_draw(b, cols, rows, items)
 }
 
 ui_small :: proc(b: ^FB, msg: string) {
@@ -237,39 +233,40 @@ ui_field :: proc(b: ^FB, row, col: int, f: ^Field, sel: bool, val: string, val_c
 		mark = "▸ "
 	}
 	fb_at(b, row, col)
+	fb_str(b, "\x1b[1m")
 	fb_fg(b, label_col)
 	fb_str(b, mark)
 	fb_str(b, f.label)
 	fb_at(b, row, col + 18)
 	if f.kind == .Text {
-		if sel {
-			fb_fg(b, C_TEXT)
-		} else {
-			fb_fg(b, C_DIM)
-		}
+		fb_fg(b, C_TEXT)
 		ui_edit(b, row, col + 18, 26, f.text[:], f.cur, sel, f.hint)
 		fb_reset(b)
 		return
 	}
 	if sel {
 		fb_fg(b, val_col)
-		fb_str(b, val)
+	} else if f.kind == .Toggle {
+		fb_fg(b, val_col)
 	} else {
-		fb_fg(b, C_DIM)
-		fb_str(b, val)
+		fb_fg(b, C_TEXT)
 	}
+	fb_str(b, val)
 	fb_reset(b)
 }
 
 // ui_action draws one action button inside a panel.
 ui_action :: proc(b: ^FB, row, col: int, label: string, sel: bool) {
 	fb_at(b, row, col)
+	fb_str(b, "\x1b[1m")
 	if sel {
 		fb_fg(b, C_GREEN)
-		fb_str(b, tprintf("[ %s ]", label))
+		fb_str(b, "▸ ")
+		fb_str(b, label)
 	} else {
 		fb_fg(b, C_DIM)
-		fb_str(b, tprintf("  %s  ", label))
+		fb_str(b, "  ")
+		fb_str(b, label)
 	}
 	fb_reset(b)
 }
@@ -442,22 +439,15 @@ menu_select :: proc() -> MenuChoice {
 				need_draw = false
 				continue
 			}
-			width := 48
-			height := 10
+			width := 24
+			height := 9
 			left := (cols - width) / 2
 			top := (rows - height) / 2
-			ui_panel(&b, top, left, width, height, "toom — terminal video call")
-			opts := [3]struct {
-				title: string,
-				hint:  string,
-			}{
-				{"Join meeting", "enter a meeting code"},
-				{"Create room", "host a new room"},
-				{"Settings", "configure devices and defaults"},
-			}
+			ui_panel(&b, top, left, width, height, "TOOM")
+			opts := [3]string{tr("Join meeting", "加入会议"), tr("Create room", "创建房间"), tr("Settings", "设置")}
 			for opt, i in opts {
 				mark := "  "
-				col := C_DIM
+				col := C_TEXT
 				if i == sel {
 					mark = "▸ "
 					col = C_GREEN
@@ -465,14 +455,10 @@ menu_select :: proc() -> MenuChoice {
 				fb_at(&b, top + 2 + i * 2, left + 4)
 				fb_fg(&b, col)
 				fb_str(&b, mark)
-				fb_str(&b, opt.title)
-				fb_fg(&b, C_DIM)
-				hbuf: [256]u8
-				fb_at(&b, top + 2 + i * 2, left + 24)
-				fb_str(&b, cut_text(opt.hint, width - 27, hbuf[:]))
+				fb_str(&b, opt)
 				fb_reset(&b)
 			}
-			ui_hint(&b, "wasd, jk, arrows select  Enter confirm  q quit")
+			ui_hint(&b, [4][2]string{{"wasd, jk, arrows", tr("select", "选择")}, {"Enter", tr("confirm", "确认")}, {"q", tr("quit", "退出")}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}
@@ -591,6 +577,16 @@ create_sel_state: int = 5
 join_fields: [5]Field
 join_inited: bool
 
+// join_labels_refresh rewrites the join form labels for the current
+// language so a language switch takes effect at once.
+join_labels_refresh :: proc() {
+	join_fields[0].label = tr("Name", "名称")
+	join_fields[1].label = tr("Meeting code", "会议码")
+	join_fields[2].label = tr("Camera", "摄像头")
+	join_fields[3].label = tr("Microphone", "麦克风")
+	join_fields[4].label = tr("Join meeting", "加入会议")
+}
+
 // join_fields_init fills the join form defaults once so user edits
 // survive a trip back to the menu within one program run.
 join_fields_init :: proc() {
@@ -634,7 +630,8 @@ form_join :: proc() -> FormResult {
 			height := 11
 			left := (cols - width) / 2
 			top := (rows - height) / 2
-			ui_panel(&b, top, left, width, height, "toom — join meeting")
+			join_labels_refresh()
+			ui_panel(&b, top, left, width, height, tr("TOOM — join meeting", "TOOM — 加入会议"))
 			for f, i in fields {
 				val := ""
 				#partial switch f.kind {
@@ -658,14 +655,14 @@ form_join :: proc() -> FormResult {
 				}
 				ui_field(&b, top + 2 + i, left + 2, &fields[i], i == sel, val, vcol)
 			}
-			ui_action(&b, top + 7, left + 6, "Join meeting", sel == 4)
+			ui_action(&b, top + 7, left + 2, tr("Join meeting", "加入会议"), sel == 4)
 			if msg != "" {
 				fb_at(&b, top + 9, left + 3)
 				fb_fg(&b, C_RED)
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, "wasd, jk, arrows move  Enter confirm  Esc back")
+			ui_hint(&b, [4][2]string{{"wasd, jk, arrows", tr("move", "移动")}, {"Enter", tr("confirm", "确认")}, {"Esc", tr("back", "返回")}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}
@@ -709,6 +706,17 @@ form_join :: proc() -> FormResult {
 }
 create_fields: [6]Field
 create_inited: bool
+
+// create_labels_refresh rewrites the create form labels for the
+// current language so a language switch takes effect at once.
+create_labels_refresh :: proc() {
+	create_fields[0].label = tr("Server address", "服务器地址")
+	create_fields[1].label = tr("Room name", "房间名")
+	create_fields[2].label = tr("Name", "名称")
+	create_fields[3].label = tr("Camera", "摄像头")
+	create_fields[4].label = tr("Microphone", "麦克风")
+	create_fields[5].label = tr("Create and join", "创建并加入")
+}
 
 // create_fields_init fills the create form defaults once so user edits
 // survive a trip back to the menu within one program run.
@@ -757,7 +765,8 @@ form_create :: proc() -> FormResult {
 			height := 12
 			left := (cols - width) / 2
 			top := (rows - height) / 2
-			ui_panel(&b, top, left, width, height, "toom — create room")
+			create_labels_refresh()
+			ui_panel(&b, top, left, width, height, tr("TOOM — create room", "TOOM — 创建房间"))
 			for f, i in fields {
 				val := ""
 				#partial switch f.kind {
@@ -781,14 +790,14 @@ form_create :: proc() -> FormResult {
 				}
 				ui_field(&b, top + 2 + i, left + 2, &fields[i], i == sel, val, vcol)
 			}
-			ui_action(&b, top + 8, left + 6, "Create and join", sel == 5)
+			ui_action(&b, top + 8, left + 2, tr("Create and join", "创建并加入"), sel == 5)
 			if msg != "" {
 				fb_at(&b, top + 10, left + 3)
 				fb_fg(&b, C_RED)
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, "wasd, jk, arrows move  Enter confirm  Esc back")
+			ui_hint(&b, [4][2]string{{"wasd, jk, arrows", tr("move", "移动")}, {"Enter", tr("confirm", "确认")}, {"Esc", tr("back", "返回")}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}
@@ -865,7 +874,7 @@ code_show :: proc(code: string) -> bool {
 				row += 1
 				i = end
 			}
-			ui_hint(&b, "Enter copy the code to clipboard and join  q back")
+			ui_hint(&b, [4][2]string{{"Enter", tr("copy to clipboard and join", "复制并加入")}, {"q", tr("back", "返回")}, {"", ""}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}
@@ -910,7 +919,7 @@ form_error :: proc(msg: string) {
 			mbuf: [512]u8
 			fb_str(&b, cut_text(msg, width - 6, mbuf[:]))
 			fb_reset(&b)
-			ui_hint(&b, "Press any key to go back")
+			ui_hint(&b, [4][2]string{{"any key", tr("back", "返回")}, {"", ""}, {"", ""}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}
