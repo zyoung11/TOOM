@@ -171,10 +171,11 @@ card_draw :: proc(b: ^FB) {
 	fb_reset(b)
 }
 
-// state_word maps a device state to its status word and color.
+// state_word maps a device state to its status word and color. Off is
+// always red so every switch row looks the same.
 state_word :: proc(enabled, active: bool) -> (string, int) {
 	if !enabled {
-		return "off", C_DIM
+		return "off", C_RED
 	}
 	if active {
 		return "on", C_GREEN

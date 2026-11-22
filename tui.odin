@@ -16,6 +16,7 @@ C_RED    :: 0xed8796
 C_TEXT   :: 0xcbcfd6
 C_DIM    :: 0x6e7381
 C_BORDER :: 0x555a6b
+C_INK    :: 0x1e2030
 C_BG     :: 0x24273a
 C_FIELD  :: 0x1e2030
 
@@ -420,6 +421,7 @@ form_width :: 48
 MenuChoice :: enum {
 	Join,
 	Create,
+	Settings,
 	Quit,
 }
 
@@ -441,16 +443,17 @@ menu_select :: proc() -> MenuChoice {
 				continue
 			}
 			width := 48
-			height := 8
+			height := 10
 			left := (cols - width) / 2
 			top := (rows - height) / 2
 			ui_panel(&b, top, left, width, height, "toom — terminal video call")
-			opts := [2]struct {
+			opts := [3]struct {
 				title: string,
 				hint:  string,
 			}{
 				{"Join meeting", "enter a meeting code"},
 				{"Create room", "host a new room"},
+				{"Settings", "configure devices and defaults"},
 			}
 			for opt, i in opts {
 				mark := "  "
@@ -469,7 +472,7 @@ menu_select :: proc() -> MenuChoice {
 				fb_str(&b, cut_text(opt.hint, width - 27, hbuf[:]))
 				fb_reset(&b)
 			}
-			ui_hint(&b, "Up/Down/j/k select  Enter confirm  q quit")
+			ui_hint(&b, "wasd/jk/arrows select  Enter confirm  q quit")
 			fb_end(&b)
 			need_draw = false
 		}
@@ -485,20 +488,25 @@ menu_select :: proc() -> MenuChoice {
 		case .Quit:
 			return .Quit
 		case .Up:
-			sel = (sel + 1) % 2
+			sel = (sel + 2) % 3
 		case .Down, .Tab:
-			sel = (sel + 1) % 2
+			sel = (sel + 1) % 3
 		case .Enter:
 			if sel == 0 {
 				return .Join
 			}
-			return .Create
+			if sel == 1 {
+				return .Create
+			}
+			return .Settings
 		case .Char:
 			if k.ch == 'q' || k.ch == 'Q' {
 				return .Quit
 			}
-			if k.ch == 'j' || k.ch == 'k' {
-				sel = (sel + 1) % 2
+			if k.ch == 'j' || k.ch == 's' {
+				sel = (sel + 1) % 3
+			} else if k.ch == 'k' || k.ch == 'w' {
+				sel = (sel + 2) % 3
 			}
 		}
 		need_draw = true
@@ -552,10 +560,14 @@ form_key :: proc(fields: []Field, sel: ^int, k: Key) -> int {
 			f.cur += 1
 		} else if k.ch == 'q' || k.ch == 'Q' {
 			return 1
-		} else if k.ch == 'j' {
+		} else if k.ch == 'j' || k.ch == 's' {
 			sel^ = (idx + 1) % len(fields)
-		} else if k.ch == 'k' {
+		} else if k.ch == 'k' || k.ch == 'w' {
 			sel^ = (idx + len(fields) - 1) % len(fields)
+		} else if k.ch == 'a' {
+			sel^ = (idx + len(fields) - 1) % len(fields)
+		} else if k.ch == 'd' {
+			sel^ = (idx + 1) % len(fields)
 		} else if f.kind == .Toggle && k.ch == ' ' {
 			f.tog = !f.tog
 		}
@@ -573,10 +585,10 @@ form_key :: proc(fields: []Field, sel: ^int, k: Key) -> int {
 }
 
 menu_sel_state: int
-join_sel_state: int
-create_sel_state: int
+join_sel_state: int = 1
+create_sel_state: int = 5
 
-join_fields: [6]Field
+join_fields: [5]Field
 join_inited: bool
 
 // join_fields_init fills the join form defaults once so user edits
@@ -585,12 +597,13 @@ join_fields_init :: proc() {
 	if join_inited {
 		return
 	}
-	join_fields[0] = Field{label = "Name", kind = .Text, hint = "user", def = "user"}
+	join_fields[0] = Field{label = "Name", kind = .Text, hint = "user", def = app_cfg.name}
+	join_fields[0].text = to_runes(app_cfg.name)
+	join_fields[0].cur = len(join_fields[0].text)
 	join_fields[1] = Field{label = "Meeting code", kind = .Text, hint = "paste meeting code", def = ""}
-	join_fields[2] = Field{label = "Camera", kind = .Toggle, tog = true}
-	join_fields[3] = Field{label = "Microphone", kind = .Toggle, tog = true}
-	join_fields[4] = Field{label = "Select devices", kind = .Action, value = "Enter"}
-	join_fields[5] = Field{label = "Join meeting", kind = .Action, value = "Enter"}
+	join_fields[2] = Field{label = "Camera", kind = .Toggle, tog = cam_default}
+	join_fields[3] = Field{label = "Microphone", kind = .Toggle, tog = mic_default}
+	join_fields[4] = Field{label = "Join meeting", kind = .Action, value = "Enter"}
 	join_inited = true
 }
 
@@ -645,15 +658,14 @@ form_join :: proc() -> FormResult {
 				}
 				ui_field(&b, top + 2 + i, left + 2, &fields[i], i == sel, val, vcol)
 			}
-			ui_action(&b, top + 7, left + 6, "Select devices", sel == 4)
-			ui_action(&b, top + 8, left + 6, "Join meeting", sel == 5)
+			ui_action(&b, top + 7, left + 6, "Join meeting", sel == 4)
 			if msg != "" {
-				fb_at(&b, top + 10, left + 3)
+				fb_at(&b, top + 9, left + 3)
 				fb_fg(&b, C_RED)
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, "Tab/j/k move  Up/Down move  Enter confirm  Esc/q back")
+			ui_hint(&b, "wasd/jk/arrows move  Enter confirm  Esc back")
 			fb_end(&b)
 			need_draw = false
 		}
@@ -675,10 +687,6 @@ form_join :: proc() -> FormResult {
 		need_draw = true
 		msg = ""
 		if act == 2 && sel == 4 {
-			dev_run()
-			need_draw = true
-		}
-		if act == 2 && sel == 5 {
 			name_val := field_value(&fields[0], name_buf[:])
 			code_chk := field_value(&fields[1], code_buf[:])
 			if name_val == "" {
@@ -699,7 +707,7 @@ form_join :: proc() -> FormResult {
 		}
 	}
 }
-create_fields: [7]Field
+create_fields: [6]Field
 create_inited: bool
 
 // create_fields_init fills the create form defaults once so user edits
@@ -708,13 +716,18 @@ create_fields_init :: proc() {
 	if create_inited {
 		return
 	}
-	create_fields[0] = Field{label = "Server address", kind = .Text, hint = "127.0.0.1:4400", def = "127.0.0.1:4400"}
-	create_fields[1] = Field{label = "Room name", kind = .Text, hint = "room", def = "room"}
-	create_fields[2] = Field{label = "Name", kind = .Text, hint = "user", def = "user"}
-	create_fields[3] = Field{label = "Camera", kind = .Toggle, tog = true}
-	create_fields[4] = Field{label = "Microphone", kind = .Toggle, tog = true}
-	create_fields[5] = Field{label = "Select devices", kind = .Action, value = "Enter"}
-	create_fields[6] = Field{label = "Create and join", kind = .Action, value = "Enter"}
+	create_fields[0] = Field{label = "Server address", kind = .Text, hint = "127.0.0.1:4400", def = app_cfg.server}
+	create_fields[0].text = to_runes(app_cfg.server)
+	create_fields[0].cur = len(create_fields[0].text)
+	create_fields[1] = Field{label = "Room name", kind = .Text, hint = "room", def = app_cfg.room}
+	create_fields[1].text = to_runes(app_cfg.room)
+	create_fields[1].cur = len(create_fields[1].text)
+	create_fields[2] = Field{label = "Name", kind = .Text, hint = "user", def = app_cfg.name}
+	create_fields[2].text = to_runes(app_cfg.name)
+	create_fields[2].cur = len(create_fields[2].text)
+	create_fields[3] = Field{label = "Camera", kind = .Toggle, tog = cam_default}
+	create_fields[4] = Field{label = "Microphone", kind = .Toggle, tog = mic_default}
+	create_fields[5] = Field{label = "Create and join", kind = .Action, value = "Enter"}
 	create_inited = true
 }
 
@@ -768,15 +781,14 @@ form_create :: proc() -> FormResult {
 				}
 				ui_field(&b, top + 2 + i, left + 2, &fields[i], i == sel, val, vcol)
 			}
-			ui_action(&b, top + 8, left + 6, "Select devices", sel == 5)
-			ui_action(&b, top + 9, left + 6, "Create and join", sel == 6)
+			ui_action(&b, top + 8, left + 6, "Create and join", sel == 5)
 			if msg != "" {
 				fb_at(&b, top + 10, left + 3)
 				fb_fg(&b, C_RED)
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, "Tab/j/k move  Up/Down move  Enter confirm  Esc/q back")
+			ui_hint(&b, "wasd/jk/arrows move  Enter confirm  Esc back")
 			fb_end(&b)
 			need_draw = false
 		}
@@ -798,10 +810,6 @@ form_create :: proc() -> FormResult {
 		need_draw = true
 		msg = ""
 		if act == 2 && sel == 5 {
-			dev_run()
-			need_draw = true
-		}
-		if act == 2 && sel == 6 {
 			server := strings.clone(normalize_server(field_value(&fields[0], bufs[0][:])))
 			room := strings.clone(field_value(&fields[1], bufs[1][:]))
 			name := strings.clone(field_value(&fields[2], bufs[2][:]))

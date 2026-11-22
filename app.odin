@@ -89,6 +89,7 @@ self_screen_w:      int
 self_screen_h:      int
 share_output:       string
 share_cursor:       i32 = 1
+share_win_menu:     i32
 share_window:       u64
 win_lost:           i32
 mir_y:       []u8
@@ -512,6 +513,7 @@ dev_modal_run :: proc() {
 	old_cam := strings.clone(cam_dev)
 	sync.atomic_store(&ui_modal, 1)
 	time.sleep(60 * time.Millisecond)
+	dev_session = true
 	dev_run()
 	sync.atomic_store(&ui_modal, 0)
 	if dev_pick[0].use != in_id || dev_pick[1].use != out_id {
@@ -520,6 +522,7 @@ dev_modal_run :: proc() {
 	if cam_dev != old_cam {
 		cam_switch()
 	}
+	config_store()
 	if len(in_id) > 0 {
 		delete(in_id)
 	}
@@ -837,6 +840,119 @@ share_apply :: proc() {
 		toast_show("screen sharing restarted", 1)
 	} else {
 		toast_show("screen sharing failed, compositor needs wlr-screencopy", 2)
+	}
+}
+
+// share_target_apply starts or retargets screen sharing on one picked
+// target. The stop entry ends sharing instead.
+share_target_apply :: proc(e: ^DevEnt) {
+	if e.dev == "stop" {
+		screen_stop()
+		sync.atomic_store(&layout_dirty, 1)
+		sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, false)
+		toast_show("screen sharing stopped", 0)
+		return
+	}
+	if e.win != 0 {
+		share_window = e.win
+		if len(share_output) > 0 {
+			delete(share_output)
+			share_output = ""
+		}
+	} else {
+		share_window = 0
+		if len(share_output) > 0 {
+			delete(share_output)
+		}
+		share_output = strings.clone(e.dev)
+	}
+	dev_set_name(&dev_target_name, e.name)
+	sharing := sync.atomic_load(&screen_send) != 0
+	if sharing {
+		share_apply()
+	} else if screen_pipeline_start() {
+		sync.atomic_store(&screen_send, 1)
+		sync.atomic_store(&layout_dirty, 1)
+		toast_show("screen sharing started", 1)
+	} else {
+		toast_show("screen sharing failed, compositor needs wlr-screencopy", 2)
+	}
+	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
+}
+
+// share_menu_run opens the share target menu. Outputs are always
+// listed and windows follow the windows setting. Picking a target
+// starts or retargets sharing and picking stop sharing ends it.
+share_menu_run :: proc() {
+	opts: [dynamic]DevEnt
+	defer dev_list_free(&opts)
+	base := 0
+	if sync.atomic_load(&screen_send) != 0 {
+		append(&opts, DevEnt{name = strings.clone("stop sharing"), dev = strings.clone("stop")})
+		base = 1
+	}
+	cur := dev_sub_build(.Target, &opts)
+	if cur < base {
+		cur = base
+	}
+	need_draw := true
+	for {
+		if need_draw {
+			b: FB
+			fb_begin(&b)
+			cols, rows := term_size()
+			if cols < 40 || rows < 10 {
+				ui_small(&b, "Terminal too small, need at least 40x10")
+				fb_end(&b)
+				need_draw = false
+				continue
+			}
+			width := min(cols - 8, 60)
+			height := min(len(opts) + 4, rows - 4)
+			left := (cols - width) / 2 + 1
+			top := max((rows - height) / 2, 1)
+			ui_panel(&b, top, left, width, height, "share target")
+			dev_col_draw(&b, left + 2, top + 2, width - 4, height - 3, opts[:], cur, 0, true, false)
+			hint_draw(&b, cols, rows, [4][2]string{{"j/k, arrows", "move"}, {"Enter", "select"}, {"q", "cancel"}, {"", ""}})
+			fb_end(&b)
+			need_draw = false
+		}
+		k := key_next()
+		if k.kind == .None {
+			if term_take_winch() {
+				need_draw = true
+			}
+			continue
+		}
+		need_draw = true
+		#partial switch k.kind {
+		case .Quit:
+			return
+		case .Up:
+			if cur > 0 {
+				cur -= 1
+			}
+		case .Down:
+			if cur + 1 < len(opts) {
+				cur += 1
+			}
+		case .Enter:
+			share_target_apply(&opts[cur])
+			return
+		case .Char:
+			switch k.ch {
+			case 'q', 'Q':
+				return
+			case 'k', 'K', 'w', 'W':
+				if cur > 0 {
+					cur -= 1
+				}
+			case 'j', 'J', 's', 'S':
+				if cur + 1 < len(opts) {
+					cur += 1
+				}
+			}
+		}
 	}
 }
 
@@ -1287,24 +1403,8 @@ conf_key :: proc(k: Key) -> bool {
 				}
 			}
 		case 's', 'S':
-			if sync.atomic_load(&screen_ready) == 0 {
-				if screen_pipeline_start() {
-					sync.atomic_store(&screen_send, 1)
-					toast_show("screen sharing started", 1)
-				} else {
-					toast_show("screen sharing failed, compositor needs wlr-screencopy", 2)
-				}
-			} else {
-				on := 1 - sync.atomic_load(&screen_send)
-				sync.atomic_store(&screen_send, on)
-				if on != 0 {
-					toast_show("screen sharing started", 1)
-				} else {
-					toast_show("screen sharing stopped", 0)
-				}
-			}
+			share_menu_run()
 			sync.atomic_store(&layout_dirty, 1)
-			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case '?':
 			sync.atomic_store(&ui_modal, 1)
 			time.sleep(60 * time.Millisecond)

@@ -24,15 +24,38 @@ DevKind :: enum u8 {
 	AudioIn,
 	AudioOut,
 	CamDev,
+	WinTargets,
 	Target,
 }
 
-// dev_row_kinds lists the settings rows of every group in display
-// order.
-dev_row_kinds := [3][]DevKind{
+// dev_session marks the meeting settings mode where the switches
+// control live session state instead of the join defaults.
+dev_session: bool
+
+// dev_row_kinds_session lists the settings rows of every group during
+// a meeting in display order.
+dev_row_kinds_session := [3][]DevKind{
 	{.Mic, .Spk, .DeskShare, .Volume, .AudioIn, .AudioOut},
 	{.Cam, .Mirror, .Colors, .Layout, .CamDev},
-	{.Cursor, .Target},
+	{.Cursor, .WinTargets},
+}
+
+// dev_row_kinds_menu lists the settings rows before a meeting. The
+// session switches show their join defaults here and system audio is
+// left out because it has no useful default.
+dev_row_kinds_menu := [3][]DevKind{
+	{.Mic, .Spk, .Volume, .AudioIn, .AudioOut},
+	{.Cam, .Mirror, .Colors, .Layout, .CamDev},
+	{.Cursor, .WinTargets},
+}
+
+// dev_rows returns the settings rows of one group for the current
+// mode.
+dev_rows :: proc(folder: int) -> []DevKind {
+	if dev_session {
+		return dev_row_kinds_session[folder]
+	}
+	return dev_row_kinds_menu[folder]
 }
 
 // DevEnt is one entry inside an option column.
@@ -357,19 +380,21 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 			}
 		}
 		delete(outs)
-		dev_win_refresh()
-		for w in win_entries {
-			label := w.title
-			if label == "" {
-				label = w.app
-			}
-			append(opts, DevEnt{
-				name = strings.clone(tprintf("window: %s", label)),
-				win = w.id,
-				picked = share_window != 0 && share_window == w.id,
-			})
-			if opts[len(opts^) - 1].picked {
-				picked = len(opts^) - 1
+		if sync.atomic_load(&share_win_menu) != 0 {
+			dev_win_refresh()
+			for w in win_entries {
+				label := w.title
+				if label == "" {
+					label = w.app
+				}
+				append(opts, DevEnt{
+					name = strings.clone(tprintf("window: %s", label)),
+					win = w.id,
+					picked = share_window != 0 && share_window == w.id,
+				})
+				if opts[len(opts^) - 1].picked {
+					picked = len(opts^) - 1
+				}
 			}
 		}
 	}
@@ -427,7 +452,6 @@ dev_col_apply :: proc() {
 		return
 	}
 	e := &dev_col.opts[dev_col.cur]
-	sharing := sync.atomic_load(&screen_send) != 0
 	#partial switch dev_col.kind {
 	case .AudioIn:
 		dev_set_pick(0, e)
@@ -440,26 +464,6 @@ dev_col_apply :: proc() {
 		color_idx = dev_col.cur
 		colors_apply()
 		toast_show(tprintf("colors %d", colors_now()), 0)
-	case .Target:
-		if e.win != 0 {
-			share_window = e.win
-			if len(share_output) > 0 {
-				delete(share_output)
-				share_output = ""
-			}
-		} else {
-			share_window = 0
-			if len(share_output) > 0 {
-				delete(share_output)
-			}
-			share_output = strings.clone(e.dev)
-		}
-		dev_set_name(&dev_target_name, e.name)
-		if sharing {
-			share_apply()
-		} else {
-			toast_show(tprintf("share target %s", e.name), 0)
-		}
 	}
 	for i in 0..<len(dev_col.opts) {
 		dev_col.opts[i].picked = i == dev_col.cur
@@ -509,12 +513,39 @@ dev_edit_apply :: proc() {
 dev_toggle :: proc(kind: DevKind) {
 	#partial switch kind {
 	case .Mic:
+		if !dev_session {
+			mic_default = !mic_default
+			v := "off"
+			if mic_default {
+				v = "on"
+			}
+			toast_show(tprintf("microphone default %s", v), 0)
+			return
+		}
 		conf_key(Key{kind = .Char, ch = 'n'})
 	case .Spk:
+		if !dev_session {
+			spk_default = !spk_default
+			v := "off"
+			if spk_default {
+				v = "on"
+			}
+			toast_show(tprintf("speaker default %s", v), 0)
+			return
+		}
 		conf_key(Key{kind = .Char, ch = 'm'})
 	case .DeskShare:
 		conf_key(Key{kind = .Char, ch = 'a'})
 	case .Cam:
+		if !dev_session {
+			cam_default = !cam_default
+			v := "off"
+			if cam_default {
+				v = "on"
+			}
+			toast_show(tprintf("camera default %s", v), 0)
+			return
+		}
 		conf_key(Key{kind = .Char, ch = 'c'})
 	case .Mirror:
 		conf_key(Key{kind = .Char, ch = 'h'})
@@ -531,6 +562,13 @@ dev_toggle :: proc(kind: DevKind) {
 			}
 			toast_show(tprintf("share cursor %s", v), 0)
 		}
+	case .WinTargets:
+		sync.atomic_store(&share_win_menu, 1 - sync.atomic_load(&share_win_menu))
+		v := "off"
+		if sync.atomic_load(&share_win_menu) != 0 {
+			v = "on"
+		}
+		toast_show(tprintf("windows listed %s", v), 0)
 	}
 }
 
@@ -561,6 +599,8 @@ dev_row_label :: proc(kind: DevKind) -> string {
 		return "output device"
 	case .CamDev:
 		return "camera device"
+	case .WinTargets:
+		return "windows"
 	case .Target:
 		return "share target"
 	}
@@ -572,21 +612,48 @@ dev_row_label :: proc(kind: DevKind) -> string {
 dev_row_value :: proc(kind: DevKind) -> (string, int) {
 	switch kind {
 	case .Mic:
+		if !dev_session {
+			v := "off"
+			c := C_RED
+			if mic_default {
+				v = "on"
+				c = C_GREEN
+			}
+			return tprintf("default: %s", v), c
+		}
 		return state_word(mic_enabled, sync.atomic_load(&mic_mute) == 0)
 	case .Spk:
+		if !dev_session {
+			v := "off"
+			c := C_RED
+			if spk_default {
+				v = "on"
+				c = C_GREEN
+			}
+			return tprintf("default: %s", v), c
+		}
 		return state_word(audio_ok, sync.atomic_load(&spk_mute) == 0)
 	case .DeskShare:
 		return state_word(true, sync.atomic_load(&desk_send) != 0)
 	case .Cam:
+		if !dev_session {
+			v := "off"
+			c := C_RED
+			if cam_default {
+				v = "on"
+				c = C_GREEN
+			}
+			return tprintf("default: %s", v), c
+		}
 		return state_word(true, sync.atomic_load(&send_video) != 0)
 	case .Mirror:
 		return state_word(true, sync.atomic_load(&self_mirror) != 0)
 	case .Cursor:
 		return state_word(true, sync.atomic_load(&share_cursor) != 0)
 	case .Volume:
-		return tprintf("%d%%", vol_pct()), C_TEXT
+		return tprintf("%d%%", vol_pct()), C_YELLOW
 	case .Colors:
-		return tprintf("%d", colors_now()), C_TEXT
+		return tprintf("%d", colors_now()), C_YELLOW
 	case .Layout:
 		if screen_owner != 0 || screen_local_on() {
 			return "share", C_MAUVE
@@ -610,6 +677,8 @@ dev_row_value :: proc(kind: DevKind) -> (string, int) {
 			return "default", C_GREEN
 		}
 		return dev_cam_name, C_GREEN
+	case .WinTargets:
+		return state_word(true, sync.atomic_load(&share_win_menu) != 0)
 	case .Target:
 		if dev_target_name == "" {
 			return "none", C_DIM
@@ -623,7 +692,7 @@ dev_row_value :: proc(kind: DevKind) -> (string, int) {
 // option column like a folder.
 dev_row_folder :: proc(kind: DevKind) -> bool {
 	#partial switch kind {
-	case .Colors, .AudioIn, .AudioOut, .CamDev, .Target:
+	case .Colors, .AudioIn, .AudioOut, .CamDev:
 		return true
 	}
 	return false
@@ -632,7 +701,7 @@ dev_row_folder :: proc(kind: DevKind) -> bool {
 // dev_group_marked reports whether one group holds a concrete picked
 // choice instead of a system default.
 dev_group_marked :: proc(folder: int) -> bool {
-	for kind in dev_row_kinds[folder] {
+	for kind in dev_rows(folder) {
 		#partial switch kind {
 		case .AudioIn:
 			if dev_pick[0].use != "" {
@@ -644,10 +713,6 @@ dev_group_marked :: proc(folder: int) -> bool {
 			}
 		case .CamDev:
 			if dev_cam_name != "" {
-				return true
-			}
-		case .Target:
-			if share_window != 0 || share_output != "" {
 				return true
 			}
 		}
@@ -753,13 +818,13 @@ dev_run :: proc() {
 				if !dev_back() {
 					return
 				}
-			case 'h', 'H':
+			case 'h', 'H', 'a', 'A':
 				_ = dev_back()
-			case 'l', 'L':
+			case 'l', 'L', 'd', 'D':
 				dev_fwd()
-			case 'j', 'J':
+			case 'j', 'J', 's', 'S':
 				dev_move(1)
-			case 'k', 'K':
+			case 'k', 'K', 'w', 'W':
 				dev_move(-1)
 			case ' ':
 				dev_enter()
@@ -789,7 +854,7 @@ dev_fwd :: proc() {
 		return
 	}
 	if dev_dir == 1 {
-		kind := dev_row_kinds[dev_focus_folder][dev_row[dev_focus_folder]]
+		kind := dev_rows(dev_focus_folder)[dev_row[dev_focus_folder]]
 		if dev_row_folder(kind) {
 			dev_col_open(kind)
 		}
@@ -808,7 +873,7 @@ dev_move :: proc(delta: int) {
 		return
 	}
 	if dev_dir == 1 {
-		n := len(dev_row_kinds[dev_focus_folder])
+		n := len(dev_rows(dev_focus_folder))
 		if n > 0 {
 			dev_row[dev_focus_folder] = (dev_row[dev_focus_folder] + delta + n) % n
 		}
@@ -830,13 +895,13 @@ dev_enter :: proc() {
 		dev_col_apply()
 		return
 	}
-	kind := dev_row_kinds[dev_focus_folder][dev_row[dev_focus_folder]]
+	kind := dev_rows(dev_focus_folder)[dev_row[dev_focus_folder]]
 	if dev_row_folder(kind) {
 		dev_col_open(kind)
 		return
 	}
 	#partial switch kind {
-	case .Mic, .Spk, .DeskShare, .Cam, .Mirror, .Cursor, .Layout:
+	case .Mic, .Spk, .DeskShare, .Cam, .Mirror, .Cursor, .Layout, .WinTargets:
 		dev_toggle(kind)
 	case .Volume:
 		dev_edit_open(kind)
@@ -882,20 +947,20 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 
 	nbuf: [512]u8
 	folder := dev_focus_folder
-	kinds := dev_row_kinds[folder]
+	kinds := dev_rows(folder)
 
 	need0 := 0
-	for name, i in device_folders {
-		w := disp_width("▸ ") + disp_width(name) + 2
-		if dev_group_marked(i) {
-			w += 1
-		}
-		need0 = max(need0, w)
+	for name in device_folders {
+		need0 = max(need0, disp_width("▸ ") + disp_width(name) + 1)
 	}
 	need1 := 0
 	for kind in kinds {
-		v, _ := dev_row_value(kind)
-		need1 = max(need1, disp_width(dev_row_label(kind)) + disp_width(v) + 4)
+		w := disp_width("▸ ") + disp_width(dev_row_label(kind)) + 2
+		if !dev_row_folder(kind) {
+			v, _ := dev_row_value(kind)
+			w += disp_width(v) + 1
+		}
+		need1 = max(need1, w)
 	}
 	w0 := min(need0, max(cols / 4, 8))
 	w1 := min(need1, max(cols / 3, 12))
@@ -906,13 +971,8 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 
 	for idx in 0..<len(device_folders) {
 		y := idx + 3
-		name := device_folders[idx]
-		mark := "▸ "
-		if dev_group_marked(idx) {
-			mark = "✓ "
-		}
-		line := tprintf("%s%s", mark, cut_dot(name, w0 - disp_width(mark) - 1, nbuf[:]))
-		dev_cell(b, x0, y, w0, line, idx == folder && dev_dir == 0, false, dev_dir > 0)
+		line := cut_dot(tprintf("▸ %s", device_folders[idx]), w0 - 1, nbuf[:])
+		dev_cell(b, x0, y, w0, line, idx == folder && dev_dir == 0, false, dev_dir > 0, 0)
 	}
 
 	for kind, i in kinds {
@@ -920,7 +980,7 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 		label := dev_row_label(kind)
 		value, vcol := dev_row_value(kind)
 		cursor := i == dev_row[folder] && dev_dir == 1
-		dev_row_draw(b, x1, y, w1, label, value, vcol, cursor, dev_dir > 1)
+		dev_row_draw(b, x1, y, w1, label, value, vcol, cursor, dev_dir > 1, dev_row_folder(kind))
 	}
 
 	if dev_col.open {
@@ -961,40 +1021,61 @@ dev_col_draw :: proc(b: ^FB, x, y, width, list_h: int, opts: []DevEnt, cursor, o
 		}
 		line := tprintf("%s%s", mark, cut_dot(e.name, width - disp_width(mark), nbuf[:]))
 		is_cur := idx == cursor
-		dev_cell(b, x, y + row, width, line, is_cur && focused, e.picked, dim && !is_cur)
+		bg := 0
+		if e.picked {
+			bg = C_GREEN
+		}
+		dev_cell(b, x, y + row, width, line, is_cur && focused, e.picked, dim && !is_cur, bg)
 	}
 }
 
-// dev_row_draw paints one settings row: label on the left, value on
-// the right and the cursor bar when focused.
-dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, cursor, dim: bool) {
+// dev_row_draw paints one settings row. Folder rows carry a drill
+// marker and hide the value. Plain rows right align a short value and
+// never cut the label. The cursor paints the whole row with the value
+// color like the BM selection bar.
+dev_row_draw :: proc(b: ^FB, x, y, width: int, label, value: string, vcol: int, cursor, dim, folder_row: bool) {
 	nbuf: [512]u8
 	vbuf: [512]u8
-	label_cut := cut_dot(label, max(width / 2, 6), nbuf[:])
-	value_cut := cut_dot(value, max(width - disp_width(label_cut) - 3, 6), vbuf[:])
-	fb_at(b, y, x)
-	if cursor {
-		fb_str(b, "\x1b[7m")
+	mark := "  "
+	if folder_row {
+		mark = "▸ "
 	}
-	if dim {
+	fb_at(b, y, x)
+	ink := false
+	if cursor {
+		if folder_row {
+			fb_str(b, "\x1b[7m")
+		} else {
+			fb_bg(b, vcol)
+			fb_fg(b, C_INK)
+			ink = true
+		}
+	}
+	if dim && !cursor {
 		fb_str(b, "\x1b[2m")
 	}
-	fb_str(b, " ")
-	fb_str(b, label_cut)
-	used := 1 + disp_width(label_cut)
-	gap := max(width - used - disp_width(value_cut) - 1, 1)
-	for _ in 0..<gap {
+	fb_str(b, mark)
+	fb_str(b, label)
+	used := disp_width(mark) + disp_width(label)
+	if !folder_row {
+		value_cut := cut_dot(value, max(width - used - 2, 3), vbuf[:])
+		gap := max(width - used - disp_width(value_cut) - 1, 1)
+		for _ in 0..<gap {
+			fb_str(b, " ")
+		}
+		if !cursor {
+			fb_fg(b, vcol)
+		}
+		fb_str(b, value_cut)
+		used += gap + disp_width(value_cut)
+	}
+	if ink {
+		fb_bg(b, vcol)
+	}
+	for _ in 0..<max(width - used, 0) {
 		fb_str(b, " ")
 	}
-	if cursor {
-		fb_str(b, "\x1b[27m")
-	}
-	fb_fg(b, vcol)
-	fb_str(b, value_cut)
 	fb_reset(b)
-	for _ in 0..<max(width - used - gap - disp_width(value_cut), 0) {
-		fb_str(b, " ")
-	}
 }
 
 // dev_edit_draw paints the modal number editor panel over the page.
@@ -1018,16 +1099,22 @@ dev_edit_draw :: proc(b: ^FB, cols, rows: int) {
 	fb_reset(b)
 }
 
-// dev_cell draws one padded cell with the reverse video cursor bar.
-dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bool) {
+// dev_cell draws one padded cell. The cursor paints a colored bar
+// with dark ink when the entry carries a color, otherwise reverse
+// video.
+dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bool, bg: int) {
 	nbuf: [512]u8
 	shown := cut_dot(line, width, nbuf[:])
 	fb_at(b, y, x)
-	if chosen {
-		fb_fg(b, C_GREEN)
-	}
 	if cursor {
-		fb_str(b, "\x1b[7m")
+		if bg != 0 {
+			fb_bg(b, bg)
+			fb_fg(b, C_INK)
+		} else {
+			fb_str(b, "\x1b[7m")
+		}
+	} else if chosen {
+		fb_fg(b, C_GREEN)
 	}
 	if dim {
 		fb_str(b, "\x1b[2m")
@@ -1039,33 +1126,10 @@ dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bo
 	fb_reset(b)
 }
 
-// dev_hint draws the operation hints on the bottom line.
-dev_hint :: proc(b: ^FB, cols, rows: int) {
+// hint_draw paints one centered hint line on the bottom row.
+hint_draw :: proc(b: ^FB, cols, rows: int, items: [4][2]string) {
 	fb_at(b, rows, 1)
 	fb_str(b, "\x1b[K")
-	items: [4][2]string
-	if dev_edit.open {
-		items = [4][2]string{
-			{"0-9", "type value"},
-			{"Enter", "confirm"},
-			{"Esc", "cancel"},
-			{"", ""},
-		}
-	} else if dev_dir == 2 {
-		items = [4][2]string{
-			{"j/k, arrows", "move"},
-			{"Enter", "select"},
-			{"h/q", "back"},
-			{"", ""},
-		}
-	} else {
-		items = [4][2]string{
-			{"h/j/k/l, arrows", "move"},
-			{"Enter", "open or toggle"},
-			{"Space", "toggle"},
-			{"q", "back"},
-		}
-	}
 	total := 0
 	for it in items {
 		if it[0] == "" {
@@ -1087,4 +1151,32 @@ dev_hint :: proc(b: ^FB, cols, rows: int) {
 		fb_reset(b)
 		x += disp_width(it[0]) + 1 + disp_width(it[1]) + 4
 	}
+}
+
+// dev_hint draws the operation hints on the bottom line.
+dev_hint :: proc(b: ^FB, cols, rows: int) {
+	items: [4][2]string
+	if dev_edit.open {
+		items = [4][2]string{
+			{"0-9", "type value"},
+			{"Enter", "confirm"},
+			{"Esc", "cancel"},
+			{"", ""},
+		}
+	} else if dev_dir == 2 {
+		items = [4][2]string{
+			{"j/k, arrows", "move"},
+			{"Enter/Space", "select"},
+			{"h/q", "back"},
+			{"", ""},
+		}
+	} else {
+		items = [4][2]string{
+			{"wasd, hjkl, arrows", "move"},
+			{"Enter/Space", "open or toggle"},
+			{"q", "back"},
+			{"", ""},
+		}
+	}
+	hint_draw(b, cols, rows, items)
 }
