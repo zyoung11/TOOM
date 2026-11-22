@@ -25,6 +25,7 @@ cap_dev:  ma.device
 pb_dev:   ma.device
 desk_dev: ma.device
 audio_ctx: ma.context_type
+audio_fail: string
 audio_ok: bool
 desk_ok:  bool
 spk_mute: i32
@@ -38,15 +39,29 @@ rx_level:     u32
 // pulse_default_id fills a device id with the Pulse special default
 // name. Passing no device id makes the Pulse layer fall back to the
 // default sink monitor instead of the default source.
+// pulse_default_id fills one device id with the real default device
+// found through enumeration. The @DEFAULT_SINK@ alias is not
+// resolved by the miniaudio pulse backend.
 pulse_default_id :: proc(id: ^ma.device_id, capture: bool) {
-	name := "@DEFAULT_SINK@"
+	pdevs: [^]ma.device_info
+	pcount: u32
+	cdevs: [^]ma.device_info
+	ccount: u32
+	if ma.context_get_devices(&audio_ctx, &pdevs, &pcount, &cdevs, &ccount) != .SUCCESS {
+		return
+	}
+	list := pdevs
+	n := int(pcount)
 	if capture {
-		name = "@DEFAULT_SOURCE@"
+		list = cdevs
+		n = int(ccount)
 	}
-	for i in 0..<len(name) {
-		id.pulse[i] = c.char(name[i])
+	for i in 0..<n {
+		if bool(list[i].isDefault) {
+			id^ = list[i].id
+			return
+		}
 	}
-	id.pulse[len(name)] = 0
 }
 
 // level_store updates a peak level with decay so the bar settles back.
@@ -171,6 +186,7 @@ audio_start :: proc() -> bool {
 
 	ctx_config := ma.context_config_init()
 	if ma.context_init(nil, 0, &ctx_config, &audio_ctx) != .SUCCESS {
+		audio_fail = "audio: context init failed"
 		return false
 	}
 
@@ -180,7 +196,7 @@ audio_start :: proc() -> bool {
 	if cid, ok := dev_audio_id(true); ok {
 		sel_cap = cid
 		ccfg.capture.pDeviceID = &sel_cap
-	} else if audio_ctx.backend == .pulseaudio {
+	} else {
 		pulse_default_id(&sel_cap, true)
 		ccfg.capture.pDeviceID = &sel_cap
 	}
@@ -190,6 +206,7 @@ audio_start :: proc() -> bool {
 	ccfg.periodSizeInMilliseconds = 20
 	ccfg.dataCallback = cap_cb
 	if ma.device_init(&audio_ctx, &ccfg, &cap_dev) != .SUCCESS {
+		audio_fail = "audio: capture device failed"
 		ma.context_uninit(&audio_ctx)
 		return false
 	}
@@ -202,7 +219,7 @@ audio_start :: proc() -> bool {
 	if pid, ok := dev_audio_id(false); ok {
 		sel_pb = pid
 		pcfg.playback.pDeviceID = &sel_pb
-	} else if audio_ctx.backend == .pulseaudio {
+	} else {
 		pulse_default_id(&sel_pb, false)
 		pcfg.playback.pDeviceID = &sel_pb
 	}
@@ -213,6 +230,7 @@ audio_start :: proc() -> bool {
 	pcfg.dataCallback = pb_cb
 	sync.atomic_store(&pb_primed, 0)
 	if ma.device_init(&audio_ctx, &pcfg, &pb_dev) != .SUCCESS {
+		audio_fail = "audio: playback device failed"
 		ma.device_uninit(&cap_dev)
 		ma.context_uninit(&audio_ctx)
 		return false
@@ -363,6 +381,7 @@ desk_find_monitor :: proc() -> (ma.device_id, bool) {
 	}
 	if target == "" {
 		dev_list_free(&outs)
+		toast_show("desktop audio: no default sink", 2)
 		return {}, false
 	}
 	want := fmt.tprintf("%s.monitor", target)
@@ -379,6 +398,9 @@ desk_find_monitor :: proc() -> (ma.device_id, bool) {
 	}
 	dev_list_free(&outs)
 	dev_list_free(&mons)
+	if !ok {
+		toast_show(tprintf("desktop audio: no monitor for %s", target), 2)
+	}
 	return found, ok
 }
 
@@ -386,10 +408,12 @@ desk_find_monitor :: proc() -> (ma.device_id, bool) {
 // audio sharing.
 desk_start :: proc() -> bool {
 	if !audio_ok {
+		toast_show(tprintf("desktop audio: %s", audio_fail), 2)
 		return false
 	}
 	id, ok := desk_find_monitor()
 	if !ok {
+		toast_show("desktop audio: no monitor source", 2)
 		return false
 	}
 	ring_init(&desk_ring, AUDIO_RATE * 2 * 2)
@@ -401,6 +425,7 @@ desk_start :: proc() -> bool {
 	cfg.periodSizeInMilliseconds = 20
 	cfg.dataCallback = desk_cb
 	if ma.device_init(&audio_ctx, &cfg, &desk_dev) != .SUCCESS {
+		toast_show("desktop audio: device open failed", 2)
 		return false
 	}
 	if ma.device_start(&desk_dev) != .SUCCESS {

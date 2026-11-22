@@ -281,6 +281,7 @@ cam_set :: proc(path: string) {
 	}
 	cam_dev = strings.clone(path)
 	cam_dev_owned = true
+	dev_prev_have = false
 }
 
 // cam_auto_pick installs the first available camera when the current
@@ -306,14 +307,34 @@ cam_auto_pick :: proc() {
 	}
 }
 
+// id_is_zero reports whether a device id carries no name.
+id_is_zero :: proc(id: ^ma.device_id) -> bool {
+	return id.pulse[0] == 0
+}
+
 // dev_audio_id returns the picked audio device id of one direction.
-// ok is false when the system default is picked.
+// ok is false when the system default is picked. A pick restored from
+// the config file only carries the id string, so the runtime id is
+// resolved back from the device list here.
 dev_audio_id :: proc(capture: bool) -> (ma.device_id, bool) {
 	idx := 0
 	if !capture {
 		idx = 1
 	}
 	if dev_pick[idx].use == "" {
+		return {}, false
+	}
+	if id_is_zero(&dev_pick[idx].id) {
+		list := audio_enum_devs(capture)
+		defer dev_list_free(&list)
+		for &e in list {
+			if !e.is_default && id_str(&e.id) == dev_pick[idx].use {
+				dev_pick[idx].id = e.id
+				break
+			}
+		}
+	}
+	if id_is_zero(&dev_pick[idx].id) {
 		return {}, false
 	}
 	return dev_pick[idx].id, true
@@ -489,6 +510,7 @@ dev_col_apply :: proc() {
 	for i in 0..<len(dev_col.opts) {
 		dev_col.opts[i].picked = i == dev_col.cur
 	}
+	dev_prev_have = false
 }
 
 // dev_edit_open shows the number editor for one value row.

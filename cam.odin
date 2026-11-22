@@ -1,6 +1,7 @@
 package toom
 
 import "core:c"
+import "core:fmt"
 import posix "core:sys/posix"
 
 CAM_MJPG :: 0x47504A4D
@@ -107,6 +108,56 @@ foreign camlib {
 	cam_munmap :: proc(addr: rawptr, len: u64) -> c.int ---
 	@(link_name="close")
 	cam_close :: proc(fd: c.int) -> c.int ---
+	@(link_name="flock")
+	cam_flock :: proc(fd: c.int, op: c.int) -> c.int ---
+}
+
+CAM_LOCK_EX :: 2
+CAM_LOCK_NB :: 4
+CAM_LOCK_UN :: 8
+
+cam_lock_fd: c.int = -1
+cam_fail: string
+
+// cam_lock takes the per device lock file so one camera is never
+// opened by two toom instances at once. The kernel blocks the losing
+// instance inside the UVC driver, so the lock must be held before
+// any streaming ioctl runs.
+cam_lock :: proc(dev: string) -> bool {
+	if cam_lock_fd >= 0 {
+		return true
+	}
+	name := dev
+	for i := len(dev) - 1; i >= 0; i -= 1 {
+		if dev[i] == '/' {
+			name = dev[i + 1:]
+			break
+		}
+	}
+	buf: [256]u8
+	path := fmt.tprintf("/tmp/toom-%s.lock", name)
+	fd := posix.open(to_cstr(path, buf[:]), {.RDWR, .NONBLOCK, .CREAT}, posix.mode_t{.IRUSR, .IWUSR, .IRGRP, .IROTH})
+	if fd < 0 {
+		cam_fail = "camera: lock file failed"
+		return false
+	}
+	cfd := cast(c.int)fd
+	if cam_flock(cfd, CAM_LOCK_EX | CAM_LOCK_NB) != 0 {
+		cam_close(cfd)
+		cam_fail = "camera in use by another toom"
+		return false
+	}
+	cam_lock_fd = cfd
+	return true
+}
+
+// cam_unlock releases the per device lock file.
+cam_unlock :: proc() {
+	if cam_lock_fd >= 0 {
+		cam_flock(cam_lock_fd, CAM_LOCK_UN)
+		cam_close(cam_lock_fd)
+		cam_lock_fd = -1
+	}
 }
 
 foreign import camlib {
@@ -138,6 +189,10 @@ cam_xioctl :: proc(fd: c.int, req: u64, arg: rawptr) -> c.int {
 
 // cam_start opens the device, negotiates MJPG or YUYV and streams.
 cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
+	cam_fail = ""
+	if !cam_lock(dev) {
+		return false
+	}
 	buf: [256]u8
 	n := min(len(dev), len(buf) - 1)
 	copy(buf[:], dev[:n])
@@ -150,6 +205,7 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 
 	cap: V4l2Capability
 	if cam_xioctl(fd, VIDIOC_QUERYCAP, &cap) != 0 || (cap.device_caps & V4L2_CAP_VIDEO_CAPTURE) == 0 {
+		cam_fail = "camera: not a capture device"
 		cam_stop(cam)
 		return false
 	}
@@ -169,12 +225,14 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 		}
 	}
 	if !picked {
+		cam_fail = "camera: format rejected"
 		cam_stop(cam)
 		return false
 	}
 
 	req := V4l2Requestbuffers{count = 4, typ = V4L2_BUF_TYPE_VIDEO_CAPTURE, memory = V4L2_MEMORY_MMAP}
 	if cam_xioctl(fd, VIDIOC_REQBUFS, &req) != 0 || req.count < 2 {
+		cam_fail = "camera: buffer request failed"
 		cam_stop(cam)
 		return false
 	}
@@ -201,6 +259,7 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 	}
 	typ := c.int(V4L2_BUF_TYPE_VIDEO_CAPTURE)
 	if cam_ioctl(fd, VIDIOC_STREAMON, &typ) != 0 {
+		cam_fail = "camera: stream start failed"
 		cam_stop(cam)
 		return false
 	}
@@ -236,6 +295,7 @@ cam_ungrab :: proc(cam: ^Camera) {
 }
 
 cam_stop :: proc(cam: ^Camera) {
+	cam_unlock()
 	if cam.fd > 0 {
 		typ := c.int(V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		cam_ioctl(cam.fd, VIDIOC_STREAMOFF, &typ)

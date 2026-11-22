@@ -29,6 +29,7 @@ conf_mode:      LayoutMode
 conf_focus:     int
 conf_tiles:     []Tile
 conf_code_tail: string
+conf_code_full: string
 color_idx:      int = 4
 help_open:      bool
 quit_on:        bool
@@ -43,6 +44,57 @@ quit_armed :: proc() -> bool {
 colors_now :: proc() -> int {
 	levels := CONF_COLORS
 	return levels[color_idx]
+}
+
+// code_modal_run shows the full meeting code in a modal panel and
+// copies it to the clipboard at once so a broken clipboard still
+// leaves the code readable for manual copying.
+code_modal_run :: proc() {
+	ui_modal_on()
+	time.sleep(60 * time.Millisecond)
+	defer ui_recover()
+	copied := clip_copy(conf_code_full)
+	code_w := disp_width(conf_code_full)
+	for {
+		b: FB
+		fb_begin(&b)
+		cols, rows := term_size()
+		chunk_w := max(min(cols - 10, 72), 16)
+		chunks := (code_w + chunk_w - 1) / chunk_w
+		width := chunk_w + 6
+		height := min(chunks + 4, rows - 2)
+		left := (cols - width) / 2 + 1
+		top := max((rows - height) / 2, 1)
+		ui_panel(&b, top, left, width, height, tr("meeting code", "会议码"))
+		row := top + 2
+		i := 0
+		for i < code_w && row < top + height - 2 {
+			end := min(i + chunk_w, code_w)
+			fb_at(&b, row, left + 3)
+			fb_fg(&b, C_YELLOW)
+			fb_str(&b, conf_code_full[i:end])
+			fb_reset(&b)
+			row += 1
+			i = end
+		}
+		fb_at(&b, top + height - 2, left + 3)
+		fb_fg(&b, C_DIM)
+		if copied {
+			fb_str(&b, tr("copied to clipboard", "已复制到剪贴板"))
+		} else {
+			fb_str(&b, tr("clipboard unavailable, select the code above", "剪贴板不可用，请手动选中上方代码"))
+		}
+		fb_reset(&b)
+		hint_draw(&b, cols, rows, [4][2]string{{"q/Esc", tr("close", "关闭")}, {"", ""}, {"", ""}, {"", ""}})
+		fb_end(&b)
+		k := key_next()
+		if k.kind == .Quit || k.kind == .Enter {
+			return
+		}
+		if k.kind == .Char && (k.ch == 'q' || k.ch == 'Q') {
+			return
+		}
+	}
 }
 
 // conf_draw paints the captions, the info card and the footer in one
@@ -338,7 +390,7 @@ help_draw :: proc() {
 	b: FB
 	fb_begin(&b)
 	cols, rows := term_size()
-	lines := [16][2]string{
+	lines := [17][2]string{
 		{"", "media"},
 		{"m", "toggle speaker mute"},
 		{"n", "toggle microphone mute"},
@@ -352,8 +404,9 @@ help_draw :: proc() {
 		{"h", "toggle mirrored self view"},
 		{"Tab ←/→", "pick the focused member"},
 		{"", "other"},
+		{"i", "show and copy the meeting code"},
 		{"?", "show or hide this page"},
-		{"q/Esc", "quit after one confirmation"},
+		{"q", "quit after one confirmation"},
 		{"", ""},
 	}
 	width := min(56, cols - 2)

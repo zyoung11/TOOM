@@ -685,6 +685,7 @@ desk_pipeline_start :: proc() -> bool {
 	}
 	if !opus_enc_open(&desk_enc, 128000, 2) {
 		desk_stop()
+		toast_show("desktop audio: encoder failed", 2)
 		return false
 	}
 	_ = aec_open(&desk_aec, AUDIO_RATE, PB_CH, PB_CH)
@@ -1434,7 +1435,11 @@ conf_key :: proc(k: Key) -> bool {
 				layout_apply()
 				toast_show("camera on", 1)
 			} else {
-				toast_show("camera failed to open", 2)
+				msg := "camera failed to open"
+				if cam_fail != "" {
+					msg = cam_fail
+				}
+				toast_show(msg, 2)
 			}
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		case 'f', 'F':
@@ -1458,8 +1463,6 @@ conf_key :: proc(k: Key) -> bool {
 				if desk_pipeline_start() {
 					sync.atomic_store(&desk_send, 1)
 					toast_show("desktop audio sharing started", 1)
-				} else {
-					toast_show("desktop audio sharing failed", 2)
 				}
 			} else {
 				on := 1 - sync.atomic_load(&desk_send)
@@ -1478,6 +1481,9 @@ conf_key :: proc(k: Key) -> bool {
 			time.sleep(60 * time.Millisecond)
 			help_open = true
 			help_draw()
+		case 'i', 'I':
+			code_modal_run()
+			sync.atomic_store(&layout_dirty, 1)
 		case 'd', 'D':
 			dev_modal_run()
 		}
@@ -1548,8 +1554,12 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	if conf_code_tail != "" {
 		delete(conf_code_tail)
 	}
+	if conf_code_full != "" {
+		delete(conf_code_full)
+	}
 	code := meeting_encode(server, room, secret)
 	conf_code_tail = strings.clone(code[len(code) - 4:])
+	conf_code_full = strings.clone(code)
 	delete(code)
 	layout_apply()
 
