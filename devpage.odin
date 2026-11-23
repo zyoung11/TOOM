@@ -1224,8 +1224,27 @@ hint_draw :: proc(b: ^FB, cols, rows: int, items: [4][2]string) {
 	}
 }
 
-// dev_hint draws the operation hints on the bottom line.
+// dev_hint draws the operation hints on the bottom line. A live
+// toast replaces the hints so failures stay visible inside the
+// settings page too.
 dev_hint :: proc(b: ^FB, cols, rows: int) {
+	if toast_active() {
+		col := C_TEXT
+		if toast_kind == 1 {
+			col = C_GREEN
+		} else if toast_kind == 2 {
+			col = C_RED
+		}
+		fb_at(b, rows, 1)
+		fb_str(b, "\x1b[K")
+		msg := string(toast_buf[:toast_len])
+		x := max((cols - disp_width(msg)) / 2, 1)
+		fb_at(b, rows, x)
+		fb_fg(b, col)
+		fb_str(b, msg)
+		fb_reset(b)
+		return
+	}
 	items: [4][2]string
 	if dev_edit.open {
 		items = [4][2]string{

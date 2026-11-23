@@ -23,6 +23,7 @@ print_help :: proc() {
 	fmt.printf("%sUSAGE:%s\n", C_BOLD + C_MAUVE, C_RESET)
 	fmt.printf("  %stoom%s %s[options]%s\n", C_BLUE, C_RESET, C_YELLOW, C_RESET)
 	rows := [?][2]string{
+		{"--json <json>", "apply config fields and join a meeting from json"},
 		{"-h, --help", "show help"},
 		{"-V, --version", "show version"},
 	}
@@ -65,6 +66,7 @@ main :: proc() {
 	toom.config_load()
 	toom.config_apply()
 
+	json_data := ""
 	i := 1
 	for i < len(os.args) {
 		a := os.args[i]
@@ -74,6 +76,13 @@ main :: proc() {
 		} else if a == "-V" || a == "--version" {
 			print_version()
 			return
+		} else if a == "--json" {
+			i += 1
+			if i >= len(os.args) {
+				fmt.eprintln("[-] missing value for --json")
+				os.exit(1)
+			}
+			json_data = os.args[i]
 		} else {
 			fmt.eprintf("[-] unknown option %s\n", a)
 			print_help()
@@ -82,10 +91,33 @@ main :: proc() {
 		i += 1
 	}
 
+	join_code := ""
+	join_cam := toom.cam_default
+	join_mic := toom.mic_default
+	if json_data != "" {
+		join_code, join_cam, join_mic = toom.config_json_apply(json_data)
+	}
+
 	toom.epoch = time.now()
 	toom.term_sig_setup()
 	toom.term_enter_full()
 	thread.create_and_start(toom.input_thread)
+
+	if join_code != "" {
+		mc, ok := toom.meeting_decode(join_code)
+		if !ok {
+			toom.term_leave_full()
+			fmt.eprintln("[-] invalid meeting code")
+			os.exit(1)
+		}
+		err := toom.conference_run(mc.H, mc.R, toom.app_cfg.name, mc.K, false, join_cam, join_mic)
+		toom.term_leave_full()
+		if err != "" {
+			fmt.eprintf("[-] %s\n", err)
+			os.exit(1)
+		}
+		return
+	}
 
 	for {
 		choice := toom.menu_select()

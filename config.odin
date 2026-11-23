@@ -263,6 +263,26 @@ config_store :: proc() {
 	config_save()
 }
 
+// config_json_apply overlays one automation spec on the live config
+// and returns the meeting join request. Every config field is accepted
+// plus join_code, camera_on and microphone_on. Missing fields keep
+// their current values.
+config_json_apply :: proc(data: string) -> (string, bool, bool) {
+	raw := transmute([]u8)data
+	if json.unmarshal(raw, &app_cfg) != nil {
+		fmt.eprintln("[-] --json: bad config json")
+		return "", false, false
+	}
+	extra: struct {
+		JoinCode: string `json:"join_code"`,
+		CamOn:    bool   `json:"camera_on"`,
+		MicOn:    bool   `json:"microphone_on"`,
+	}
+	_ = json.unmarshal(raw, &extra)
+	config_apply()
+	return extra.JoinCode, extra.CamOn, extra.MicOn
+}
+
 // config_load reads the config file and writes it on first run. The
 // defaults are loaded first so missing fields keep sane values.
 config_load :: proc() {

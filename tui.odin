@@ -6,6 +6,7 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:unicode/utf8"
 
 C_MAUVE  :: 0xc6a0f6
@@ -464,6 +465,9 @@ menu_select :: proc() -> MenuChoice {
 		}
 		k := key_next()
 		if k.kind == .None {
+			if sync.atomic_load(&app_stop) != 0 {
+				return .Quit
+			}
 			if term_take_winch() {
 				need_draw = true
 			}
@@ -668,6 +672,9 @@ form_join :: proc() -> FormResult {
 		}
 		k := key_next()
 		if k.kind == .None {
+			if sync.atomic_load(&app_stop) != 0 {
+				return {back = true}
+			}
 			if term_take_winch() {
 				need_draw = true
 			}
@@ -803,6 +810,9 @@ form_create :: proc() -> FormResult {
 		}
 		k := key_next()
 		if k.kind == .None {
+			if sync.atomic_load(&app_stop) != 0 {
+				return {back = true}
+			}
 			if term_take_winch() {
 				need_draw = true
 			}

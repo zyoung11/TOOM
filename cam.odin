@@ -3,13 +3,17 @@ package toom
 import "core:c"
 import "core:fmt"
 import posix "core:sys/posix"
+import "core:time"
 
 CAM_MJPG :: 0x47504A4D
 CAM_YUYV :: 0x56595559
 
 V4L2_BUF_TYPE_VIDEO_CAPTURE :: 1
+V4L2_BUF_TYPE_VIDEO_OUTPUT  :: 3
 V4L2_MEMORY_MMAP            :: 1
 V4L2_CAP_VIDEO_CAPTURE      :: 0x00000001
+V4L2_CAP_VIDEO_OUTPUT       :: 0x00000002
+V4L2_FIELD_NONE             :: 1
 
 VIDIOC_QUERYCAP  :: 0x80685600
 VIDIOC_S_FMT     :: 0xc0d05605
@@ -110,6 +114,8 @@ foreign camlib {
 	cam_close :: proc(fd: c.int) -> c.int ---
 	@(link_name="flock")
 	cam_flock :: proc(fd: c.int, op: c.int) -> c.int ---
+	@(link_name="__errno_location")
+	cam_errno_loc :: proc() -> ^c.int ---
 }
 
 CAM_LOCK_EX :: 2
@@ -178,13 +184,17 @@ Camera :: struct {
 }
 
 // cam_xioctl retries ioctl calls interrupted by signals.
+// cam_xioctl retries ioctl calls interrupted by signals and gives up
+// after a few attempts on a persistent error.
 cam_xioctl :: proc(fd: c.int, req: u64, arg: rawptr) -> c.int {
-	for {
-		r := cam_ioctl(fd, req, arg)
+	r: c.int = -1
+	for _ in 0..<4 {
+		r = cam_ioctl(fd, req, arg)
 		if r == 0 {
 			return 0
 		}
 	}
+	return r
 }
 
 // cam_start opens the device, negotiates MJPG or YUYV and streams.
@@ -225,14 +235,14 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 		}
 	}
 	if !picked {
-		cam_fail = "camera: format rejected"
+		cam_fail = tprintf("camera: format errno=%d", cam_errno_loc()^)
 		cam_stop(cam)
 		return false
 	}
 
 	req := V4l2Requestbuffers{count = 4, typ = V4L2_BUF_TYPE_VIDEO_CAPTURE, memory = V4L2_MEMORY_MMAP}
 	if cam_xioctl(fd, VIDIOC_REQBUFS, &req) != 0 || req.count < 2 {
-		cam_fail = "camera: buffer request failed"
+		cam_fail = tprintf("camera: buffer request errno=%d", cam_errno_loc()^)
 		cam_stop(cam)
 		return false
 	}
@@ -259,7 +269,12 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 	}
 	typ := c.int(V4L2_BUF_TYPE_VIDEO_CAPTURE)
 	if cam_ioctl(fd, VIDIOC_STREAMON, &typ) != 0 {
-		cam_fail = "camera: stream start failed"
+		eno := cam_errno_loc()^
+		if eno == 5 {
+			cam_fail = "camera: device busy or has no writer"
+		} else {
+			cam_fail = tprintf("camera: stream start errno=%d", eno)
+		}
 		cam_stop(cam)
 		return false
 	}
