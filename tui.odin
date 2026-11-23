@@ -28,14 +28,15 @@ FieldKind :: enum {
 }
 
 Field :: struct {
-	label: string,
-	kind:  FieldKind,
-	text:  [dynamic]rune,
-	cur:   int,
-	tog:   bool,
-	value: string,
-	hint:  string,
-	def:   string,
+	label:  string,
+	kind:   FieldKind,
+	text:   [dynamic]rune,
+	cur:    int,
+	tog:    bool,
+	value:  string,
+	hint:   string,
+	def:    string,
+	maxlen: int,
 }
 
 FormResult :: struct {
@@ -276,6 +277,15 @@ ui_action :: proc(b: ^FB, row, col: int, label: string, sel: bool) {
 fb_rune :: proc(b: ^FB, r: rune) {
 	buf, n := utf8.encode_rune(r)
 	fb_str(b, string(buf[:n]))
+}
+
+// text_bytes returns the UTF-8 size of the edited runes.
+text_bytes :: proc(t: []rune) -> int {
+	n := 0
+	for r in t {
+		n += utf8.rune_size(r)
+	}
+	return n
 }
 
 // insert_rune inserts one rune at the cursor position.
@@ -546,8 +556,10 @@ form_key :: proc(fields: []Field, sel: ^int, k: Key) -> int {
 		}
 	case .Char:
 		if editable {
-			insert_rune(&f.text, f.cur, k.ch)
-			f.cur += 1
+			if f.maxlen == 0 || text_bytes(f.text[:]) + utf8.rune_size(k.ch) <= f.maxlen {
+				insert_rune(&f.text, f.cur, k.ch)
+				f.cur += 1
+			}
 		} else if k.ch == 'q' || k.ch == 'Q' {
 			return 1
 		} else if k.ch == 'j' || k.ch == 's' {
@@ -597,7 +609,7 @@ join_fields_init :: proc() {
 	if join_inited {
 		return
 	}
-	join_fields[0] = Field{label = "Name", kind = .Text, hint = "user", def = app_cfg.name}
+	join_fields[0] = Field{label = "Name", kind = .Text, hint = "user", def = app_cfg.name, maxlen = 32}
 	join_fields[0].text = to_runes(app_cfg.name)
 	join_fields[0].cur = len(join_fields[0].text)
 	join_fields[1] = Field{label = "Meeting code", kind = .Text, hint = "paste meeting code", def = ""}
@@ -695,6 +707,8 @@ form_join :: proc() -> FormResult {
 			code_chk := field_value(&fields[1], code_buf[:])
 			if name_val == "" {
 				msg = "Name is required"
+			} else if !srv_valid_name(name_val) {
+				msg = tr("Name must be 1 to 32 printable characters", "名称需 1 至 32 个可打印字符")
 			} else if code_chk == "" {
 				msg = "Meeting code is required"
 			} else if _, ok := meeting_decode(code_chk); !ok {
@@ -734,10 +748,10 @@ create_fields_init :: proc() {
 	create_fields[0] = Field{label = "Server address", kind = .Text, hint = "127.0.0.1:4400", def = app_cfg.server}
 	create_fields[0].text = to_runes(app_cfg.server)
 	create_fields[0].cur = len(create_fields[0].text)
-	create_fields[1] = Field{label = "Room name", kind = .Text, hint = "room", def = app_cfg.room}
+	create_fields[1] = Field{label = "Room name", kind = .Text, hint = "room", def = app_cfg.room, maxlen = 32}
 	create_fields[1].text = to_runes(app_cfg.room)
 	create_fields[1].cur = len(create_fields[1].text)
-	create_fields[2] = Field{label = "Name", kind = .Text, hint = "user", def = app_cfg.name}
+	create_fields[2] = Field{label = "Name", kind = .Text, hint = "user", def = app_cfg.name, maxlen = 32}
 	create_fields[2].text = to_runes(app_cfg.name)
 	create_fields[2].cur = len(create_fields[2].text)
 	create_fields[3] = Field{label = "Camera", kind = .Toggle, tog = cam_default}
@@ -836,6 +850,10 @@ form_create :: proc() -> FormResult {
 				msg = "Address and room name are required"
 			} else if name == "" {
 				msg = "Name is required"
+			} else if !srv_valid_name(room) {
+				msg = tr("Room name must be 1 to 32 printable characters", "房间名需 1 至 32 个可打印字符")
+			} else if !srv_valid_name(name) {
+				msg = tr("Name must be 1 to 32 printable characters", "名称需 1 至 32 个可打印字符")
 			} else {
 				return FormResult{
 					ok = true,

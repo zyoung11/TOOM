@@ -250,6 +250,11 @@ main :: proc() {
 			fmt.eprintln("[-] invalid meeting code")
 			os.exit(1)
 		}
+		if !toom.srv_valid_name(mc.R) || !toom.srv_valid_name(toom.app_cfg.name) {
+			toom.term_leave_full()
+			fmt.eprintln("[-] room and name must be 1 to 32 printable characters")
+			os.exit(1)
+		}
 		err := toom.conference_run(mc.H, mc.R, toom.app_cfg.name, mc.K, false, join_cam, join_mic)
 		toom.term_leave_full()
 		if err != "" {
