@@ -1021,9 +1021,17 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 		need1 = max(need1, w)
 	}
 	w0 := min(need0, max(cols / 4, 8))
-	w1 := min(need1, max(cols / 3, 12))
 	x0 := 2
 	x1 := x0 + w0 + 1
+	show_right := dev_col.open
+	if !show_right && dev_dir != 0 && len(kinds) > 0 {
+		show_right = dev_row_folder(kinds[dev_row[folder]])
+	}
+	w1_cap := max(cols / 3, 12)
+	if !show_right {
+		w1_cap = max(cols - x1 - 2, 12)
+	}
+	w1 := min(need1, w1_cap)
 	x2 := x1 + w1 + 1
 	avail2 := max(cols - x2, 8)
 
@@ -1043,6 +1051,9 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 
 	if dev_col.open {
 		dev_col_draw(b, x2, 3, avail2, rows - 4, dev_col.opts[:], dev_col.cur, dev_col.off, dev_dir == 2, false)
+		return
+	}
+	if dev_dir == 0 {
 		return
 	}
 
