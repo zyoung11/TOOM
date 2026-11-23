@@ -24,12 +24,45 @@ tile_placeholder :: proc(b: ^FB, t: Tile, name: string) {
 	cw, ch := term_cell_pixels()
 	prows := (t.h + ch - 1) / ch
 	pcols := (t.w + cw - 1) / cw
+	if prows < 3 || pcols < 3 {
+		return
+	}
 	r0 := t.prow
 	c0 := t.pcol
-	fb_fg(b, C_BORDER)
-	for r in 0..<prows {
+	col := hex_color(app_cfg.border_color)
+	if col == 0 {
+		col = 0xd8d8d8
+	}
+	fb_str(b, tprintf("\x1b[38;2;%d;%d;%dm", u8(col >> 16), u8(col >> 8), u8(col)))
+	for c in 0..<pcols {
+		top := "─"
+		if c == 0 {
+			top = "┌"
+		} else if c == pcols - 1 {
+			top = "┐"
+		}
+		bottom := "─"
+		if c == 0 {
+			bottom = "└"
+		} else if c == pcols - 1 {
+			bottom = "┘"
+		}
+		fb_at(b, r0, c0 + c)
+		fb_str(b, top)
+		fb_at(b, r0 + prows - 1, c0 + c)
+		fb_str(b, bottom)
+	}
+	for r in 1..<prows - 1 {
 		fb_at(b, r0 + r, c0)
-		for c in 0..<pcols {
+		fb_str(b, "│")
+		fb_at(b, r0 + r, c0 + pcols - 1)
+		fb_str(b, "│")
+	}
+	fb_str(b, "\x1b[39m")
+	fb_fg(b, C_BORDER)
+	for r in 1..<prows - 1 {
+		fb_at(b, r0 + r, c0 + 1)
+		for c in 1..<pcols - 1 {
 			if (r + c) % 2 == 0 {
 				fb_str(b, "·")
 			} else {

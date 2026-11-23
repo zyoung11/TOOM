@@ -105,6 +105,30 @@ ubuf:        []u8
 vbuf:        []u8
 layout_dirty: i32
 
+// hex_color parses one #rrggbb value and returns 0 on bad input so
+// the engine falls back to its default frame color.
+hex_color :: proc(s: string) -> u32 {
+	if len(s) != 7 || s[0] != '#' {
+		return 0
+	}
+	v: u32 = 0
+	for i in 1..<7 {
+		d: u32 = 0
+		ch := s[i]
+		if ch >= '0' && ch <= '9' {
+			d = u32(ch - '0')
+		} else if ch >= 'a' && ch <= 'f' {
+			d = u32(ch - 'a') + 10
+		} else if ch >= 'A' && ch <= 'F' {
+			d = u32(ch - 'A') + 10
+		} else {
+			return 0
+		}
+		v = v * 16 + d
+	}
+	return v
+}
+
 engine_new :: proc(src_w, src_h: int, t: Tile) -> ^AideoEngine {
 	cfg: AideoConfig
 	cfg.fd = 1
@@ -115,6 +139,8 @@ engine_new :: proc(src_w, src_h: int, t: Tile) -> ^AideoEngine {
 	cfg.colors = c.int(colors_now())
 	cfg.origin_row = c.int(t.prow)
 	cfg.origin_col = c.int(t.pcol)
+	cfg.border_px = c.int(max(app_cfg.border_px, 0))
+	cfg.border_color = c.int(hex_color(app_cfg.border_color))
 	return aideo_open(&cfg)
 }
 

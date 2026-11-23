@@ -12,6 +12,8 @@ AideoConfig :: struct {
 	colors:      c.int,
 	origin_row:  c.int,
 	origin_col:  c.int,
+	border_px:   c.int,
+	border_color: c.int,
 }
 
 // AideoEngine is the opaque terminal rendering engine from aideo.h.
