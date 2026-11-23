@@ -28,15 +28,16 @@ FieldKind :: enum {
 }
 
 Field :: struct {
-	label:  string,
-	kind:   FieldKind,
-	text:   [dynamic]rune,
-	cur:    int,
-	tog:    bool,
-	value:  string,
-	hint:   string,
-	def:    string,
-	maxlen: int,
+	label:   string,
+	kind:    FieldKind,
+	text:    [dynamic]rune,
+	cur:     int,
+	tog:     bool,
+	value:   string,
+	hint:    string,
+	def:     string,
+	maxlen:  int,
+	sel_all: bool,
 }
 
 FormResult :: struct {
@@ -242,7 +243,7 @@ ui_field :: proc(b: ^FB, row, col: int, f: ^Field, sel: bool, val: string, val_c
 	fb_at(b, row, col + 18)
 	if f.kind == .Text {
 		fb_fg(b, C_TEXT)
-		ui_edit(b, row, col + 18, 26, f.text[:], f.cur, sel, f.hint)
+		ui_edit(b, row, col + 18, 26, f.text[:], f.cur, sel, f.hint, f.sel_all)
 		fb_reset(b)
 		return
 	}
@@ -288,6 +289,36 @@ text_bytes :: proc(t: []rune) -> int {
 	return n
 }
 
+// is_word_rune reports whether a rune belongs to a word for the
+// readline style word jumps.
+is_word_rune :: proc(r: rune) -> bool {
+	return r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '_'
+}
+
+// word_left returns the cursor position of the previous word start.
+word_left :: proc(t: []rune, cur: int) -> int {
+	i := cur
+	for i > 0 && !is_word_rune(t[i - 1]) {
+		i -= 1
+	}
+	for i > 0 && is_word_rune(t[i - 1]) {
+		i -= 1
+	}
+	return i
+}
+
+// word_right returns the cursor position of the next word start.
+word_right :: proc(t: []rune, cur: int) -> int {
+	i := cur
+	for i < len(t) && is_word_rune(t[i]) {
+		i += 1
+	}
+	for i < len(t) && !is_word_rune(t[i]) {
+		i += 1
+	}
+	return i
+}
+
 // insert_rune inserts one rune at the cursor position.
 insert_rune :: proc(t: ^[dynamic]rune, cur: int, r: rune) {
 	append(t, r)
@@ -316,7 +347,7 @@ field_value :: proc(f: ^Field, buf: []u8) -> string {
 
 // ui_edit draws an editable text value with a block cursor and a
 // scrolling window that follows the cursor.
-ui_edit :: proc(b: ^FB, row, col, avail: int, text: []rune, cur: int, sel: bool, hint: string) {
+ui_edit :: proc(b: ^FB, row, col, avail: int, text: []rune, cur: int, sel: bool, hint: string, sel_all: bool) {
 	if len(text) == 0 && hint != "" {
 		hbuf: [256]u8
 		hshown := cut_text(hint, avail, hbuf[:])
@@ -363,6 +394,9 @@ ui_edit :: proc(b: ^FB, row, col, avail: int, text: []rune, cur: int, sel: bool,
 		start = i
 	}
 	fb_at(b, row, col)
+	if sel_all {
+		fb_str(b, "\x1b[7m")
+	}
 	used := 0
 	idx := start
 	for idx < len(text) {
@@ -370,7 +404,7 @@ ui_edit :: proc(b: ^FB, row, col, avail: int, text: []rune, cur: int, sel: bool,
 		if used + w > avail {
 			break
 		}
-		cursor_here := sel && idx == cur
+		cursor_here := sel && idx == cur && !sel_all
 		if cursor_here {
 			fb_str(b, "\x1b[7m")
 		}
@@ -381,7 +415,10 @@ ui_edit :: proc(b: ^FB, row, col, avail: int, text: []rune, cur: int, sel: bool,
 		used += w
 		idx += 1
 	}
-	if sel && cur >= len(text) {
+	if sel_all {
+		fb_str(b, "\x1b[27m")
+	}
+	if sel && !sel_all && cur >= len(text) {
 		fb_str(b, "\x1b[7m \x1b[27m")
 		used += 1
 	}
@@ -520,7 +557,44 @@ form_key :: proc(fields: []Field, sel: ^int, k: Key) -> int {
 	idx := sel^
 	f := &fields[idx]
 	editable := f.kind == .Text
+	if editable && f.sel_all {
+		#partial switch k.kind {
+		case .Backspace, .Delete:
+			clear(&f.text)
+			f.cur = 0
+			f.sel_all = false
+			return 0
+		case .Char:
+			clear(&f.text)
+			f.cur = 0
+			f.sel_all = false
+		case .SelectAll:
+			return 0
+		case .Quit:
+			f.sel_all = false
+			return 0
+		case:
+			f.sel_all = false
+		}
+	}
 	#partial switch k.kind {
+	case .SelectAll:
+		if editable {
+			f.sel_all = true
+			f.cur = len(f.text)
+		}
+	case .WordLeft:
+		if editable {
+			f.cur = word_left(f.text[:], f.cur)
+		} else {
+			sel^ = (idx + len(fields) - 1) % len(fields)
+		}
+	case .WordRight:
+		if editable {
+			f.cur = word_right(f.text[:], f.cur)
+		} else {
+			sel^ = (idx + 1) % len(fields)
+		}
 	case .Tab, .Down:
 		sel^ = (idx + 1) % len(fields)
 	case .Up:
@@ -693,6 +767,11 @@ form_join :: proc() -> FormResult {
 			continue
 		}
 		if k.kind == .Quit {
+			if fields[sel].kind == .Text && fields[sel].sel_all {
+				fields[sel].sel_all = false
+				need_draw = true
+				continue
+			}
 			return {back = true}
 		}
 		act := form_key(fields[:], &sel, k)
@@ -833,6 +912,11 @@ form_create :: proc() -> FormResult {
 			continue
 		}
 		if k.kind == .Quit {
+			if fields[sel].kind == .Text && fields[sel].sel_all {
+				fields[sel].sel_all = false
+				need_draw = true
+				continue
+			}
 			return {back = true}
 		}
 		act := form_key(fields[:], &sel, k)

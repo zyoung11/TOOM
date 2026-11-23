@@ -1168,7 +1168,7 @@ dev_edit_draw :: proc(b: ^FB, cols, rows: int) {
 	fb_fg(b, C_DIM)
 	fb_str(b, "value")
 	fb_reset(b)
-	ui_edit(b, top + 2, left + 10, width - 14, dev_edit.text[:], dev_edit.cur, true, "")
+	ui_edit(b, top + 2, left + 10, width - 14, dev_edit.text[:], dev_edit.cur, true, "", false)
 	fb_at(b, top + 4, left + 3)
 	fb_fg(b, C_DIM)
 	#partial switch dev_edit.kind {

@@ -260,6 +260,9 @@ KeyKind :: enum {
 	End,
 	Tab,
 	FocusIn,
+	SelectAll,
+	WordLeft,
+	WordRight,
 }
 
 Key :: struct {
@@ -326,7 +329,16 @@ key_next :: proc() -> Key {
 			}
 			return {kind = .None}
 		}
+		if b2 == 'b' {
+			return {kind = .WordLeft}
+		}
+		if b2 == 'f' {
+			return {kind = .WordRight}
+		}
 		return {kind = .Quit}
+	}
+	if b == 0x01 {
+		return {kind = .SelectAll}
 	}
 	if b == 3 || b == 4 {
 		return {kind = .Quit}
