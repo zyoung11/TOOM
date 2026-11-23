@@ -100,6 +100,7 @@ foreign toomlibs {
 	aideo_set_colors :: proc(e: ^AideoEngine, colors: c.int) ---
 	aideo_push_yuv :: proc(e: ^AideoEngine, y, u, v: [^]u8, stride_y, stride_c: c.int) ---
 	aideo_repaint :: proc(e: ^AideoEngine) ---
+	aideo_restore :: proc(e: ^AideoEngine) ---
 	aideo_stdout_lock :: proc() ---
 	aideo_stdout_unlock :: proc() ---
 

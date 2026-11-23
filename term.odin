@@ -61,7 +61,13 @@ term_write :: proc(data: []u8) {
 	defer _ = posix.fcntl(posix.FD(1), .SETFL, flags)
 	off := 0
 	waits := 0
+	start := time.now()
 	for off < len(data) {
+		if time.since(start) > 600 * time.Millisecond {
+			reset := "\x1b[?2026l\x1b[0m\x1b[39m\x1b[27m\x1b[24m"
+			os.write(os.stdout, transmute([]u8)reset)
+			return
+		}
 		pfd := posix.pollfd{fd = posix.FD(1), events = {.OUT}}
 		n := posix.poll(&pfd, 1, 100)
 		if n < 0 {
@@ -70,6 +76,8 @@ term_write :: proc(data: []u8) {
 		if n == 0 {
 			waits += 1
 			if waits >= 10 {
+				reset := "\x1b[?2026l\x1b[0m\x1b[39m\x1b[27m\x1b[24m"
+				os.write(os.stdout, transmute([]u8)reset)
 				return
 			}
 			continue

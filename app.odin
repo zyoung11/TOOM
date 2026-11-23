@@ -255,6 +255,31 @@ engines_repaint :: proc() {
 	sync.mutex_unlock(&peer_mu)
 }
 
+// engines_restore redraws every frozen frame at once so the pictures
+// survive a terminal clear without waiting for new frames.
+engines_restore :: proc() {
+	sync.mutex_lock(&engine_mu)
+	if self_engine != nil {
+		aideo_restore(self_engine)
+	}
+	if self_screen_engine != nil {
+		aideo_restore(self_screen_engine)
+	}
+	sync.mutex_unlock(&engine_mu)
+	sync.mutex_lock(&peer_mu)
+	for _, p in peers {
+		sync.mutex_lock(&engine_mu)
+		if p.engine != nil {
+			aideo_restore(p.engine)
+		}
+		if p.screen_engine != nil {
+			aideo_restore(p.screen_engine)
+		}
+		sync.mutex_unlock(&engine_mu)
+	}
+	sync.mutex_unlock(&peer_mu)
+}
+
 // ui_modal_on silences the sixel streams before a text page covers
 // the meeting screen so no video diff mixes with the text layer.
 ui_modal_on :: proc() {
@@ -267,7 +292,7 @@ ui_modal_on :: proc() {
 ui_recover :: proc() {
 	sync.atomic_store(&ui_modal, 0)
 	screen_clear()
-	engines_repaint()
+	engines_restore()
 }
 
 // colors_apply pushes the selected palette size to every engine.
@@ -295,14 +320,19 @@ colors_apply :: proc() {
 // every engine whose picture rect moved. The screen is cleared once
 // per layout change instead of once per engine.
 layout_apply :: proc() {
+	sync.atomic_store(&layout_dirty, 0)
 	ids := peer_ids_sorted()
 	defer delete(ids)
 	n := 1 + len(ids)
 	if conf_focus >= n {
 		conf_focus = 0
 	}
+	share_owner := screen_owner
+	share_local := screen_local_on()
+	share_sw := screen_sw
+	share_sh := screen_sh
 	tiles: []Tile
-	if screen_owner != 0 || screen_local_on() {
+	if share_owner != 0 || share_local {
 		tiles = layout_focus(n + 1, n, self_w, self_h)
 	} else if conf_mode == .Grid {
 		tiles = layout_grid(n, self_w, self_h)
@@ -323,15 +353,17 @@ layout_apply :: proc() {
 		}
 		tile_fit(&tiles[i], src_w, src_h)
 	}
-	if screen_owner != 0 {
+	if share_owner != 0 {
 		sw2, sh2 := self_w, self_h
-		sp := peer_get(screen_owner)
+		sp := peer_get(share_owner)
 		if sp != nil && sp.screen_w > 0 {
 			sw2, sh2 = sp.screen_w, sp.screen_h
 		}
-		tile_fit(&tiles[n], sw2, sh2)
-	} else if screen_local_on() {
-		tile_fit(&tiles[n], screen_sw, screen_sh)
+		if n < len(tiles) {
+			tile_fit(&tiles[n], sw2, sh2)
+		}
+	} else if share_local && n < len(tiles) {
+		tile_fit(&tiles[n], share_sw, share_sh)
 		self_screen_tile = tiles[n]
 	}
 	// The screen is cleared once per layout change so no stale
@@ -349,24 +381,23 @@ layout_apply :: proc() {
 		p.has_tile = true
 		slot_resize(&p.engine, p.src_w, p.src_h, p.tile)
 	}
-	if screen_owner != 0 {
-		sp := peers[screen_owner]
+	if share_owner != 0 && n < len(tiles) {
+		sp := peers[share_owner]
 		if sp != nil {
 			sp.screen_tile = tiles[n]
 			slot_resize(&sp.screen_engine, sp.screen_w, sp.screen_h, sp.screen_tile)
 		}
 	}
 	sync.mutex_unlock(&peer_mu)
-	if screen_local_on() {
-		slot_resize(&self_screen_engine, screen_sw, screen_sh, self_screen_tile)
+	if share_local && n < len(tiles) {
+		slot_resize(&self_screen_engine, share_sw, share_sh, self_screen_tile)
 	}
-	if screen_owner == 0 && !screen_local_on() {
+	if share_owner == 0 && !share_local {
 		slot_close(&self_screen_engine)
 	}
 	delete(conf_tiles)
 	conf_tiles = tiles
 	engines_repaint()
-	sync.atomic_store(&layout_dirty, 0)
 }
 
 peer_add :: proc(info: PeerInfo) {
@@ -1418,7 +1449,7 @@ conf_key :: proc(k: Key) -> bool {
 			layout_apply()
 		}
 	case .FocusIn:
-		engines_repaint()
+		engines_restore()
 	case .Char:
 		if key_is(k, app_cfg.key_spk) {
 			audio_toggle_spk()
@@ -1441,8 +1472,8 @@ conf_key :: proc(k: Key) -> bool {
 				sync.atomic_store(&cam_off, off)
 				sync.atomic_store(&send_video, 1 - off)
 				if off == 1 {
-					screen_clear()
-					engines_repaint()
+					slot_close(&self_engine)
+					sync.atomic_store(&layout_dirty, 1)
 					toast_show("camera off", 0)
 				} else {
 					toast_show("camera on", 1)
@@ -1654,7 +1685,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 		}
 		if tmux_mode && time.since(last_full) >= TMUX_FULL_INTERVAL {
 			last_full = time.now()
-			engines_repaint()
+			engines_restore()
 		}
 		if !help_open && time.since(last_ui) >= 200 * time.Millisecond {
 			last_ui = time.now()
