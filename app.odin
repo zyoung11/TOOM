@@ -1519,6 +1519,11 @@ conf_key :: proc(k: Key) -> bool {
 	return false
 }
 
+// TMUX_FULL_INTERVAL is the full repaint period under tmux. It stays
+// below the tmux image count limit window so the base frame is never
+// evicted while diff frames keep arriving.
+TMUX_FULL_INTERVAL :: 10 * time.Second
+
 // conference_run drives one call from join to hangup. It returns an
 // empty string on a clean exit or the failure reason.
 conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_on: bool) -> string {
@@ -1602,6 +1607,12 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	}
 
 	last_ui: time.Time
+	last_full: time.Time
+	tmux_env := os.get_env_alloc("TMUX", context.allocator)
+	tmux_mode := tmux_env != ""
+	if tmux_mode {
+		delete(tmux_env)
+	}
 	for sync.atomic_load(&app_stop) == 0 {
 		tmp := runtime.default_temp_allocator_temp_begin()
 		defer runtime.default_temp_allocator_temp_end(tmp)
@@ -1629,6 +1640,10 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 		}
 		if sync.atomic_load(&layout_dirty) != 0 {
 			layout_apply()
+		}
+		if tmux_mode && time.since(last_full) >= TMUX_FULL_INTERVAL {
+			last_full = time.now()
+			engines_repaint()
 		}
 		if !help_open && time.since(last_ui) >= 200 * time.Millisecond {
 			last_ui = time.now()

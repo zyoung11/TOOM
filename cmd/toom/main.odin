@@ -241,6 +241,7 @@ main :: proc() {
 	toom.term_sig_setup()
 	toom.term_enter_full()
 	thread.create_and_start(toom.input_thread)
+	toom.term_sig_unblock()
 
 	if join_code != "" {
 		mc, ok := toom.meeting_decode(join_code)
