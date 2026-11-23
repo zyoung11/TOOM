@@ -30,8 +30,8 @@ void* toom_aec_open(int rate, int cap_ch, int play_ch) {
 		webrtc::AudioProcessing::Config::NoiseSuppression::kModerate;
 	config.high_pass_filter.enabled = true;
 	a->apm->ApplyConfig(config);
-	a->cap_cfg = webrtc::StreamConfig(rate, cap_ch, false);
-	a->play_cfg = webrtc::StreamConfig(rate, play_ch, false);
+	a->cap_cfg = webrtc::StreamConfig(rate, cap_ch);
+	a->play_cfg = webrtc::StreamConfig(rate, play_ch);
 	return a;
 }
 

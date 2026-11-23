@@ -1,6 +1,4 @@
 /toom
 ffstatic/
 *.o
-server/toom-server
-server/toomsim
-server/test/bin/
+aideo/miniaudio/libminiaudio.a

@@ -1,4 +1,0 @@
-FROM scratch
-COPY bin/toom-server /toom-server
-COPY bin/toomsim /toomsim
-COPY config.json /config.json

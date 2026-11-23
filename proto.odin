@@ -20,6 +20,7 @@ MSG_SUBSCRIBE      :: 0x0b
 MSG_PING           :: 0x0c
 MSG_PONG           :: 0x0d
 MSG_BYE            :: 0x0e
+MSG_STATS          :: 0x0f
 MSG_MEDIA          :: 0x40
 
 RESULT_OK       :: "ok"
@@ -105,6 +106,16 @@ PingMsg :: struct {
 
 PongMsg :: struct {
 	TS: u64 `json:"ts"`,
+}
+
+StatsMsg :: struct {}
+
+StatsRpyMsg :: struct {
+	Result:    string `json:"result"`,
+	Rooms:     int    `json:"rooms"`,
+	Members:   int    `json:"members"`,
+	Forwarded: u64    `json:"forwarded"`,
+	Dropped:   u64    `json:"dropped"`,
 }
 
 b64e :: proc(data: []u8) -> string {

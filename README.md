@@ -5,36 +5,32 @@ sixel 渲染在终端里，房间不超过 10 人，音频客户端混音。
 
 ## 架构
 
-1. `server/`（Go）：轻量 SFU。管理房间与成员，挑战应答入会，媒体数据报原样转发。
-2. `toom`（Odin）：入会表单、采集、H.264 与 Opus 编解码、多画面渲染、混音。
-3. 渲染引擎来自 Aideo 源码包引入（`import aideo "../Aideo"`），Aideo 仓库零改动。
+1. `toom`（Odin）：单二进制双模式。无参数进 TUI 客户端，入会表单、采集、
+   H.264 与 Opus 编解码、多画面渲染、混音。子命令 `run` 等跑 SFU 服务端，
+   管理房间与成员，挑战应答入会，媒体数据报原样转发。
+2. 渲染引擎走 Aideo 的 C ABI（`aideo/libaideo.a` 加 `aideo.h`），`aideo/miniaudio`
+   为自带的 miniaudio 绑定，AVX2 量化内核随源码。本仓库自包含。
 
 ## 构建
 
-依赖：Aideo 仓库（同级目录）、odin、cc、git、cmake、meson、nasm。
+依赖：odin、cc、git、cmake、meson、ninja、nasm。
 
 ```bash
-sh build.sh              # x264、libopus、dav1d、静态 FFmpeg、编码垫片、客户端
-cd server && go build -ldflags="-s -w" -o toom-server ./cmd/toom-server
+sh build.sh              # webrtc 静态库、x264、libopus、dav1d、静态 FFmpeg、垫片、二进制
 ```
 
 ## 运行
 
-服务端配置 `config.json`，放在二进制同目录或用 `--config` 指定。文件缺失时 `run` 与 `install` 自动写入默认值：
-
-```json
-{
-  "port": 4400
-}
-```
+服务端只有一个端口设置，不传 `--port` 默认 4400。
 
 服务端命令：
 
 ```bash
-./server/toom-server run --config config.json    # 前台运行
-./server/toom-server run --config config.json --log   # 同时写日志文件
-sudo ./server/toom-server install --config config.json   # 安装 systemd 服务并开机自启
-sudo ./server/toom-server uninstall                      # 停止并移除服务
+./toom run                      # 前台运行，默认端口 4400
+./toom run --port 4400 --log    # 指定端口并写 toom.log
+sudo ./toom install --port 4400 # 安装 systemd 服务并开机自启
+sudo ./toom uninstall           # 停止并移除服务
+./toom status --port 4400       # 服务状态、端口应答与转发计数
 ```
 
 客户端两步走：
@@ -122,20 +118,29 @@ UDP 单端口全双工。6 字节信封（版本、类型、大端长度）加�
 | `libavcodec` `libavutil` 等 | H.264 与 MJPEG 编解码，Aideo 播放器路径 |
 | `libx264` `h264_nvenc` `h264_vaapi` | 视频编码三后端，运行时探测回退 |
 | `libopus` | 音频编解码，48 kHz 单声道 20 ms |
+| `webrtc-audio-processing` | 回声消除与降噪，含 abseil 全静态 |
+| `libstdc++` `libgcc` | C++ 运行时，静态链入 |
 | `miniaudio` | 麦克风采集与扬声器播放 |
 | `avx2_quant.o` | sixel 量化，AVX2 内核 |
 
-GPU 编码：NVIDIA 走 NVENC（dlopen 驱动，无链接依赖），Intel 与 AMD 走
-VAAPI（运行时依赖 `libva.so.2` 与 `libdrm.so.2`），全部失败回退 libx264。
+二进制只动态依赖 glibc 基础件（libc、libm、ld-linux），其余全部静态，
+丢到任何 glibc 发行版都能启动。GPU 编码：NVIDIA 走 NVENC，Intel 与 AMD
+走 VAAPI，驱动库均在运行期 dlopen 探测，缺失只影响该后端，全部失败回退
+libx264。
 
 ## 测试
 
-```bash
-cd server && go test -race ./...        # 协议与转发
-sh server/test/podman.sh                # podman 组网，3 客户端互流
-```
+验证一条完整链路：`toom run` 启动 SFU，两个终端各开一个 TUI 客户端，
+一方创建房间，另一方用会议码加入，确认画面与声音互通。
+`toom status` 查房间数、成员数与转发计数。
 
-帮助页：`./toom-server --help` 为命令总览，`./toom-server run --help` 等为子命令页。
+## 更新 Aideo
+
+在 Aideo 仓库执行 `odin build . -build-mode:static -out:libaideo.a`，
+把 `libaideo.a` 与 `aideo.h` 复制进 `aideo/`。C ABI 未变时 TOOM 零改动。
+miniaudio 绑定独立于 Aideo，只跟 miniaudio 上游。
+
+帮助页：`./toom --help` 为命令总览，`./toom run --help` 等为子命令页。
 
 ## 限制
 

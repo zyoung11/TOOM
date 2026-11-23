@@ -5,7 +5,6 @@ import "core:os"
 import posix "core:sys/posix"
 import "core:sync"
 import "core:time"
-import aideo "../Aideo"
 
 Termios :: struct {
 	iflag:  u32,
@@ -51,11 +50,36 @@ foreign syslib {
 }
 
 // term_write writes raw bytes to the terminal under the aideo write
-// lock so the sixel streams and the text layer never interleave.
+// lock so the sixel streams and the text layer never interleave. A
+// stalled terminal drops the buffer after a one second budget so the
+// interface stays responsive under backpressure.
 term_write :: proc(data: []u8) {
-	sync.mutex_lock(&aideo.stdout_mu)
-	os.write(os.stdout, data)
-	sync.mutex_unlock(&aideo.stdout_mu)
+	aideo_stdout_lock()
+	defer aideo_stdout_unlock()
+	flags := posix.fcntl(posix.FD(1), .GETFL, 0)
+	_ = posix.fcntl(posix.FD(1), .SETFL, flags | 0x800)
+	defer _ = posix.fcntl(posix.FD(1), .SETFL, flags)
+	off := 0
+	waits := 0
+	for off < len(data) {
+		pfd := posix.pollfd{fd = posix.FD(1), events = {.OUT}}
+		n := posix.poll(&pfd, 1, 100)
+		if n < 0 {
+			return
+		}
+		if n == 0 {
+			waits += 1
+			if waits >= 10 {
+				return
+			}
+			continue
+		}
+		nw, werr := os.write(os.stdout, data[off:])
+		if werr != nil || nw <= 0 {
+			return
+		}
+		off += nw
+	}
 }
 
 term_orig:    Termios

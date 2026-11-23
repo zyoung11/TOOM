@@ -6,7 +6,7 @@ import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:unicode/utf8"
-import ma "../Aideo/miniaudio"
+import ma "aideo/miniaudio"
 
 // DEV_FOLDERS is the number of settings groups.
 DEV_FOLDERS :: 5

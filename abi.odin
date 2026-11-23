@@ -4,10 +4,14 @@ import "core:c"
 
 foreign import toomlibs {
 	"h264enc.o",
+	"compat_shim.o",
+	"va_shim.o",
 	"aec_shim.o",
 	"wlshim.o",
 	"screen_shim.o",
 	"proto/screencopy-protocol.o",
+	"aideo/libaideo.a",
+	"aideo/avx2_quant.o",
 	"ffstatic/libavcodec.a",
 	"ffstatic/libavformat.a",
 	"ffstatic/libswscale.a",
@@ -17,11 +21,9 @@ foreign import toomlibs {
 	"ffstatic/libz.a",
 	"ffstatic/libx264.a",
 	"ffstatic/libopus.a",
-	"system:va",
-	"system:va-drm",
-	"system:drm",
-	"system:webrtc-audio-processing-1",
-	"system:stdc++",
+	"ffstatic/libwebrtc_all.a",
+	"ffstatic/libstdc++.a",
+	"ffstatic/libgcc.a",
 	"system:m",
 	"system:pthread",
 	"system:dl",
@@ -91,6 +93,15 @@ foreign toomlibs {
 	toom_aec_close :: proc(p: rawptr) ---
 	toom_aec_play :: proc(p: rawptr, data: [^]i16, frames: c.int) ---
 	toom_aec_cap :: proc(p: rawptr, data: [^]i16, frames: c.int) ---
+
+	aideo_open :: proc(cfg: ^AideoConfig) -> ^AideoEngine ---
+	aideo_close :: proc(e: ^AideoEngine) ---
+	aideo_resize :: proc(e: ^AideoEngine, out_w, out_h, origin_row, origin_col: c.int) ---
+	aideo_set_colors :: proc(e: ^AideoEngine, colors: c.int) ---
+	aideo_push_yuv :: proc(e: ^AideoEngine, y, u, v: [^]u8, stride_y, stride_c: c.int) ---
+	aideo_repaint :: proc(e: ^AideoEngine) ---
+	aideo_stdout_lock :: proc() ---
+	aideo_stdout_unlock :: proc() ---
 
 	toom_screen_open :: proc(output_index: c.int) -> rawptr ---
 	toom_screen_open_ex :: proc(name, region: cstring, cursor: c.int) -> rawptr ---

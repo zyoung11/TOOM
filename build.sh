@@ -12,6 +12,9 @@ DAV1D_SRC="${DAV1D_SRC:-/tmp/dav1d-src}"
 X264_SRC="${X264_SRC:-/tmp/x264-src}"
 OPUS_SRC="${OPUS_SRC:-/tmp/opus-src}"
 OPUS_BUILD="${OPUS_BUILD:-/tmp/opus-build}"
+WEBRTC_SRC="${WEBRTC_SRC:-/home/zy/zy/TEST/Apps/CLI/webrtc-audio-processing}"
+WEBRTC_BUILD="${WEBRTC_BUILD:-/tmp/webrtc-build}"
+WEBRTC_INST="${WEBRTC_INST:-/tmp/webrtc-inst}"
 FFNV_SRC="${FFNV_SRC:-/tmp/ffnvcodec-src}"
 FFNV_INST="${FFNV_INST:-/tmp/ffnvcodec-inst}"
 JOBS="${JOBS:-$(nproc)}"
@@ -110,16 +113,50 @@ echo "[i] building FFmpeg (player superset + encoders)"
 		libswresample/libswresample.a libavutil/libavutil.a "$TOOM_DIR/ffstatic/"
 )
 
+echo "[i] building aideo artifacts"
+cc -O2 -mavx2 -c aideo/avx2_quant.c -o aideo/avx2_quant.o
+cc -O2 -c aideo/miniaudio/ma_impl.c -o aideo/miniaudio/ma_impl.o
+ar rcs aideo/miniaudio/libminiaudio.a aideo/miniaudio/ma_impl.o
+
 echo "[i] building encoder shim"
 cc -O2 -I"$FFMPEG_SRC" -c h264enc.c -o h264enc.o
 
+echo "[i] building compat shim"
+cc -O2 -fno-builtin -c compat_shim.c -o compat_shim.o
+
+echo "[i] building va shim"
+cc -O2 -c va_shim.c -o va_shim.o
+
+echo "[i] building webrtc-audio-processing (static)"
+if ! find "$WEBRTC_INST/lib" -name 'libwebrtc-audio-processing-*.a' 2>/dev/null | grep -q .; then
+	rm -rf "$WEBRTC_BUILD" "$WEBRTC_INST"
+	meson setup "$WEBRTC_BUILD" "$WEBRTC_SRC" \
+		--default-library=static --buildtype=release \
+		--prefix="$WEBRTC_INST" --wrap-mode=forcefallback >/dev/null
+	ninja -C "$WEBRTC_BUILD" >/dev/null
+	meson install -C "$WEBRTC_BUILD" >/dev/null
+fi
+rm -f ffstatic/libwebrtc_all.a
+{
+	echo "CREATE $TOOM_DIR/ffstatic/libwebrtc_all.a"
+	find "$WEBRTC_INST/lib" -name 'libwebrtc-audio-processing-*.a' | while read -r a; do
+		echo "ADDLIB $a"
+	done
+	find "$WEBRTC_BUILD/subprojects" -name 'libabsl_*.a' | sort | while read -r a; do
+		echo "ADDLIB $a"
+	done
+	echo "SAVE"
+	echo "END"
+} | ar -M
+
+echo "[i] staging static C++ runtime"
+cp "$(cc -print-file-name=libstdc++.a)" ffstatic/libstdc++.a
+cp "$(cc -print-file-name=libgcc.a)" ffstatic/libgcc.a
+
 echo "[i] building aec shim"
-c++ -O2 -std=c++17 $(pkg-config --cflags webrtc-audio-processing-1) -c aec_shim.cc -o aec_shim.o
-
-echo "[i] building TOOM client"
-odin build cmd/toom -o:speed -out:toom
-
-echo "[+] build complete"
+PKG_CONFIG_PATH="$WEBRTC_INST/lib/pkgconfig" c++ -O2 -std=c++17 \
+	$(PKG_CONFIG_PATH="$WEBRTC_INST/lib/pkgconfig" pkg-config --cflags webrtc-audio-processing-2) \
+	-I"$WEBRTC_INST/include" -c aec_shim.cc -o aec_shim.o
 
 echo "[i] generating screencopy protocol"
 wayland-scanner client-header proto/wlr-screencopy-unstable-v1.xml proto/screencopy-client-protocol.h
@@ -129,3 +166,8 @@ cc -O2 -c proto/screencopy-protocol.c -o proto/screencopy-protocol.o
 echo "[i] building screen capture shim"
 cc -O2 -c wlshim.c -o wlshim.o
 cc -O2 -Iproto -c screen_shim.c -o screen_shim.o
+
+echo "[i] building TOOM client"
+odin build cmd/toom -o:speed -out:toom -extra-linker-flags:"-static-libstdc++ -static-libgcc -Wl,--allow-multiple-definition"
+
+echo "[+] build complete"

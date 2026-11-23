@@ -4,7 +4,6 @@ import "base:runtime"
 import "core:c"
 import "core:os"
 import "core:strings"
-import aideo "../Aideo"
 import "core:thread"
 import "core:sync"
 import "core:time"
@@ -36,7 +35,7 @@ PeerRT :: struct {
 	desk_dec: OpusDec,
 	desk_rx_aec: Aec,
 	screen_dec: Dec,
-	screen_engine: ^aideo.Engine,
+	screen_engine: ^AideoEngine,
 	screen_w:   int,
 	screen_h:   int,
 	screen_tile: Tile,
@@ -45,7 +44,7 @@ PeerRT :: struct {
 	jb_mu:   sync.Mutex,
 	desk_ring: RingBuf,
 	desk_mu:   sync.Mutex,
-	engine:  ^aideo.Engine,
+	engine:  ^AideoEngine,
 	src_w:   int,
 	src_h:   int,
 	tile:    Tile,
@@ -59,7 +58,7 @@ sess:     Session
 cam:      Camera
 enc:      H264Enc
 local_dec: Dec
-self_engine: ^aideo.Engine
+self_engine: ^AideoEngine
 self_tile:   Tile
 self_w:      int
 self_h:      int
@@ -88,7 +87,7 @@ screen_send:  i32
 screen_owner: u32
 mode_saved:   LayoutMode
 focus_saved:  int
-self_screen_engine: ^aideo.Engine
+self_screen_engine: ^AideoEngine
 self_screen_tile:   Tile
 self_screen_w:      int
 self_screen_h:      int
@@ -106,8 +105,8 @@ ubuf:        []u8
 vbuf:        []u8
 layout_dirty: i32
 
-engine_new :: proc(src_w, src_h: int, t: Tile) -> ^aideo.Engine {
-	cfg: aideo.aideo_config
+engine_new :: proc(src_w, src_h: int, t: Tile) -> ^AideoEngine {
+	cfg: AideoConfig
 	cfg.fd = 1
 	cfg.src_w = c.int(src_w)
 	cfg.src_h = c.int(src_h)
@@ -116,7 +115,7 @@ engine_new :: proc(src_w, src_h: int, t: Tile) -> ^aideo.Engine {
 	cfg.colors = c.int(colors_now())
 	cfg.origin_row = c.int(t.prow)
 	cfg.origin_col = c.int(t.pcol)
-	return aideo.aideo_open(&cfg)
+	return aideo_open(&cfg)
 }
 
 // engine_mu guards every engine pointer so pushes, rebuilds, moves
@@ -126,21 +125,21 @@ engine_mu: sync.Mutex
 // slot_push pushes one frame into the engine behind a pointer slot
 // under the engine lock. Pushes are silenced while a text page covers
 // the meeting screen.
-slot_push :: proc(slot: ^^aideo.Engine, f: YuvFrame) {
+slot_push :: proc(slot: ^^AideoEngine, f: YuvFrame) {
 	sync.mutex_lock(&engine_mu)
 	e := slot^
 	if e != nil && sync.atomic_load(&ui_modal) == 0 {
-		aideo.aideo_push_yuv(e, f.y, f.u, f.v, f.sy, f.sc)
+		aideo_push_yuv(e, f.y, f.u, f.v, f.sy, f.sc)
 	}
 	sync.mutex_unlock(&engine_mu)
 }
 
 // slot_close closes the engine behind a pointer slot under the engine
 // lock.
-slot_close :: proc(slot: ^^aideo.Engine) {
+slot_close :: proc(slot: ^^AideoEngine) {
 	sync.mutex_lock(&engine_mu)
 	if slot^ != nil {
-		aideo.aideo_close(slot^)
+		aideo_close(slot^)
 		slot^ = nil
 	}
 	sync.mutex_unlock(&engine_mu)
@@ -148,10 +147,10 @@ slot_close :: proc(slot: ^^aideo.Engine) {
 
 // slot_set replaces the engine behind a pointer slot under the engine
 // lock.
-slot_set :: proc(slot: ^^aideo.Engine, e: ^aideo.Engine) {
+slot_set :: proc(slot: ^^AideoEngine, e: ^AideoEngine) {
 	sync.mutex_lock(&engine_mu)
 	if slot^ != nil {
-		aideo.aideo_close(slot^)
+		aideo_close(slot^)
 	}
 	slot^ = e
 	sync.mutex_unlock(&engine_mu)
@@ -161,20 +160,20 @@ slot_set :: proc(slot: ^^aideo.Engine, e: ^aideo.Engine) {
 // creating it when missing and the source size is known. While a text
 // page covers the screen the engine is rebuilt instead of resized
 // because a resize emits its own screen wipe behind the text page.
-slot_resize :: proc(slot: ^^aideo.Engine, src_w, src_h: int, t: Tile) {
+slot_resize :: proc(slot: ^^AideoEngine, src_w, src_h: int, t: Tile) {
 	sync.mutex_lock(&engine_mu)
 	if slot^ == nil {
 		if src_w > 0 && src_h > 0 {
 			slot^ = engine_new(src_w, src_h, t)
 		}
 	} else if sync.atomic_load(&ui_modal) != 0 {
-		aideo.aideo_close(slot^)
+		aideo_close(slot^)
 		slot^ = nil
 		if src_w > 0 && src_h > 0 {
 			slot^ = engine_new(src_w, src_h, t)
 		}
 	} else {
-		aideo.aideo_resize(slot^, c.int(t.w), c.int(t.h), c.int(t.prow), c.int(t.pcol))
+		aideo_resize(slot^, c.int(t.w), c.int(t.h), c.int(t.prow), c.int(t.pcol))
 	}
 	sync.mutex_unlock(&engine_mu)
 }
@@ -210,20 +209,20 @@ peer_count :: proc() -> int {
 engines_repaint :: proc() {
 	sync.mutex_lock(&engine_mu)
 	if self_engine != nil {
-		aideo.aideo_repaint(self_engine)
+		aideo_repaint(self_engine)
 	}
 	if self_screen_engine != nil {
-		aideo.aideo_repaint(self_screen_engine)
+		aideo_repaint(self_screen_engine)
 	}
 	sync.mutex_unlock(&engine_mu)
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
 		sync.mutex_lock(&engine_mu)
 		if p.engine != nil {
-			aideo.aideo_repaint(p.engine)
+			aideo_repaint(p.engine)
 		}
 		if p.screen_engine != nil {
-			aideo.aideo_repaint(p.screen_engine)
+			aideo_repaint(p.screen_engine)
 		}
 		sync.mutex_unlock(&engine_mu)
 	}
@@ -249,18 +248,18 @@ ui_recover :: proc() {
 colors_apply :: proc() {
 	colors := c.int(colors_now())
 	if self_engine != nil {
-		aideo.aideo_set_colors(self_engine, colors)
+		aideo_set_colors(self_engine, colors)
 	}
 	if self_screen_engine != nil {
-		aideo.aideo_set_colors(self_screen_engine, colors)
+		aideo_set_colors(self_screen_engine, colors)
 	}
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
 		if p.engine != nil {
-			aideo.aideo_set_colors(p.engine, colors)
+			aideo_set_colors(p.engine, colors)
 		}
 		if p.screen_engine != nil {
-			aideo.aideo_set_colors(p.screen_engine, colors)
+			aideo_set_colors(p.screen_engine, colors)
 		}
 	}
 	sync.mutex_unlock(&peer_mu)

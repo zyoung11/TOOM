@@ -4,7 +4,7 @@ import "core:c"
 import "core:fmt"
 import "core:math"
 import "core:sync"
-import ma "../Aideo/miniaudio"
+import ma "aideo/miniaudio"
 
 AUDIO_RATE    :: 48000
 AUDIO_BLOCK   :: 960
