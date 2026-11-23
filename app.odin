@@ -316,10 +316,19 @@ colors_apply :: proc() {
 	sync.mutex_unlock(&peer_mu)
 }
 
+// layout_mu serializes the tile fields against the frame threads so a
+// frame arriving during a relayout never fits its picture into a tile
+// that layout_apply is rewriting at the same time.
+layout_mu: sync.Mutex
+
 // layout_apply recomputes the tiles for the current mode and rebuilds
 // every engine whose picture rect moved. The screen is cleared once
-// per layout change instead of once per engine.
+// after every engine knows its new geometry so in flight frames from
+// the old layout are dropped before the clear and full frames repaint
+// after it.
 layout_apply :: proc() {
+	sync.mutex_lock(&layout_mu)
+	defer sync.mutex_unlock(&layout_mu)
 	sync.atomic_store(&layout_dirty, 0)
 	ids := peer_ids_sorted()
 	defer delete(ids)
@@ -366,9 +375,6 @@ layout_apply :: proc() {
 		tile_fit(&tiles[n], share_sw, share_sh)
 		self_screen_tile = tiles[n]
 	}
-	// The screen is cleared once per layout change so no stale
-	// picture or partial sixel diff survives the rearrangement.
-	screen_clear()
 	self_tile = tiles[0]
 	slot_resize(&self_engine, self_w, self_h, self_tile)
 	sync.mutex_lock(&peer_mu)
@@ -395,6 +401,7 @@ layout_apply :: proc() {
 	if share_owner == 0 && !share_local {
 		slot_close(&self_screen_engine)
 	}
+	screen_clear()
 	delete(conf_tiles)
 	conf_tiles = tiles
 	engines_repaint()
@@ -457,18 +464,19 @@ peer_get :: proc(id: u32) -> ^PeerRT {
 // video_frame routes one decoded remote frame into the peer engine,
 // refitting the tile when the source size changes.
 video_frame :: proc(p: ^PeerRT, f: YuvFrame) {
-	sync.mutex_lock(&engine_mu)
+	sync.mutex_lock(&layout_mu)
 	need := p.engine == nil || p.src_w != f.w || p.src_h != f.h
-	sync.mutex_unlock(&engine_mu)
 	if need {
 		p.src_w = f.w
 		p.src_h = f.h
 		if !p.has_tile {
+			sync.mutex_unlock(&layout_mu)
 			return
 		}
 		tile_fit(&p.tile, f.w, f.h)
 		slot_set(&p.engine, engine_new(f.w, f.h, p.tile))
 	}
+	sync.mutex_unlock(&layout_mu)
 	slot_push(&p.engine, f)
 }
 
@@ -886,36 +894,38 @@ screen_local_on :: proc() -> bool {
 // screen_preview pushes one captured desktop frame into the local
 // preview engine so the sharer sees what is being shared.
 screen_preview :: proc(f: YuvFrame) {
-	sync.mutex_lock(&engine_mu)
+	sync.mutex_lock(&layout_mu)
 	need := self_screen_engine == nil || self_screen_w != f.w || self_screen_h != f.h
-	sync.mutex_unlock(&engine_mu)
 	if need {
 		self_screen_w = f.w
 		self_screen_h = f.h
 		if self_screen_tile.bw == 0 {
+			sync.mutex_unlock(&layout_mu)
 			return
 		}
 		tile_fit(&self_screen_tile, f.w, f.h)
 		slot_set(&self_screen_engine, engine_new(f.w, f.h, self_screen_tile))
 	}
+	sync.mutex_unlock(&layout_mu)
 	slot_push(&self_screen_engine, f)
 }
 
 // screen_frame_in routes one decoded screen frame into the owner
 // engine, recreating it when the source size changes.
 screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
-	sync.mutex_lock(&engine_mu)
+	sync.mutex_lock(&layout_mu)
 	need := p.screen_engine == nil || p.screen_w != f.w || p.screen_h != f.h
-	sync.mutex_unlock(&engine_mu)
 	if need {
 		p.screen_w = f.w
 		p.screen_h = f.h
 		if p.screen_tile.bw == 0 {
+			sync.mutex_unlock(&layout_mu)
 			return
 		}
 		tile_fit(&p.screen_tile, f.w, f.h)
 		slot_set(&p.screen_engine, engine_new(f.w, f.h, p.screen_tile))
 	}
+	sync.mutex_unlock(&layout_mu)
 	slot_push(&p.screen_engine, f)
 }
 

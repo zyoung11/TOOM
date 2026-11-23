@@ -201,7 +201,10 @@ term_cell_pixels :: proc() -> (int, int) {
 	return int(ws.xpixel) / int(ws.col), int(ws.ypixel) / int(ws.row)
 }
 
-// input_thread reads stdin bytes into the decode queue.
+// input_thread reads stdin bytes into the decode queue. EAGAIN is
+// retried because the render path flips stdout into non blocking mode
+// while writing, and on a terminal stdin shares that open file
+// description, so reads fail with EAGAIN during frame writes.
 input_thread :: proc() {
 	buf: [256]u8
 	for {
@@ -210,6 +213,9 @@ input_thread :: proc() {
 			continue
 		}
 		n, err := os.read(os.stdin, buf[:])
+		if pe, ok := err.(os.Platform_Error); ok && pe == .EAGAIN {
+			continue
+		}
 		if err != nil || n <= 0 {
 			input_push(0)
 			return
