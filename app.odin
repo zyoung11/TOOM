@@ -343,16 +343,6 @@ layout_apply :: proc() {
 	sync.atomic_store(&layout_dirty, 0)
 }
 
-// level_bar renders one audio level as a 4 step bar.
-level_bar :: proc(v: int) -> string {
-	steps := v * 4 / 32767
-	if steps > 4 {
-		steps = 4
-	}
-	chars := [5]string{"    ", "▁   ", "▃▂  ", "▅▄▂ ", "█▇▆▃"}
-	return chars[steps]
-}
-
 peer_add :: proc(info: PeerInfo) {
 	sync.mutex_lock(&peer_mu)
 	defer sync.mutex_unlock(&peer_mu)

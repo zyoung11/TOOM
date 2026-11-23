@@ -11,6 +11,55 @@ CapInfo :: struct {
 	name:  string,
 	muted: bool,
 	sel:   bool,
+	empty: bool,
+}
+
+// tile_placeholder paints the empty picture block with a dim dot
+// pattern, an initial badge and the name so a disabled camera never
+// leaves a void.
+tile_placeholder :: proc(b: ^FB, t: Tile, name: string) {
+	if t.bw < 4 || t.bh < 3 || t.w < 4 || t.h < 4 {
+		return
+	}
+	cw, ch := term_cell_pixels()
+	prows := (t.h + ch - 1) / ch
+	pcols := (t.w + cw - 1) / cw
+	r0 := t.prow
+	c0 := t.pcol
+	fb_fg(b, C_BORDER)
+	for r in 0..<prows {
+		fb_at(b, r0 + r, c0)
+		for c in 0..<pcols {
+			if (r + c) % 2 == 0 {
+				fb_str(b, "·")
+			} else {
+				fb_str(b, " ")
+			}
+		}
+	}
+	initial := rune('?')
+	for r in name {
+		initial = r
+		break
+	}
+	if initial >= 'a' && initial <= 'z' {
+		initial -= 32
+	}
+	badge := tprintf("(%c)", initial)
+	cy := r0 + max(prows / 2 - 1, 0)
+	bx := c0 + max((pcols - disp_width(badge)) / 2, 0)
+	fb_at(b, cy, bx)
+	fb_fg(b, C_BLUE)
+	fb_str(b, "\x1b[1m")
+	fb_str(b, badge)
+	fb_reset(b)
+	nbuf: [256]u8
+	shown := cut_text(name, pcols, nbuf[:])
+	nx := c0 + max((pcols - disp_width(shown)) / 2, 0)
+	fb_at(b, cy + 1, nx)
+	fb_fg(b, C_TEXT)
+	fb_str(b, shown)
+	fb_reset(b)
 }
 
 // Piece is one footer group: a label part and a value part. Higher
@@ -128,6 +177,10 @@ caps_draw :: proc(b: ^FB) {
 		name = tprintf("%s (me)", sess.name),
 		muted = sync.atomic_load(&mic_mute) != 0,
 		sel = conf_focus == 0,
+		empty = sync.atomic_load(&cam_off) != 0 || sync.atomic_load(&cam_ready) == 0,
+	}
+	if self_cap.empty {
+		tile_placeholder(b, self_cap.t, sess.name)
 	}
 	conf_caption(b, self_cap)
 	for id, i in ids {
@@ -140,6 +193,10 @@ caps_draw :: proc(b: ^FB) {
 			name = p.info.name,
 			muted = !p.info.mic,
 			sel = conf_focus == i + 1,
+			empty = !p.info.cam,
+		}
+		if cap.empty {
+			tile_placeholder(b, cap.t, p.info.name)
 		}
 		conf_caption(b, cap)
 	}
@@ -245,22 +302,18 @@ footer_draw :: proc(b: ^FB) {
 	if sync.atomic_load(&screen_send) != 0 {
 		scr_pri = 3
 	}
-	status := make([dynamic]Piece, 0, 12)
+	status := make([dynamic]Piece, 0, 6)
 	defer delete(status)
 	append(&status, Piece{r = sess.room, rc = C_BLUE, rb = true, pri = 0})
-	append(&status, Piece{r = tprintf("· %d", 1 + peer_count()), rc = C_TEXT, pri = 0})
-	append(&status, Piece{l = "camera", r = cam_word, rc = cam_col, pri = cam_pri})
-	append(&status, Piece{l = "microphone", r = mic_word, rc = mic_col, pri = 1})
-	append(&status, Piece{r = level_bar(int(sync.atomic_load(&cap_level))), rc = C_GREEN, pri = 7})
-	append(&status, Piece{l = "speaker", r = spk_word, rc = spk_col, pri = 2})
-	append(&status, Piece{r = level_bar(int(sync.atomic_load(&rx_level))), rc = C_GREEN, pri = 7})
-	append(&status, Piece{l = "desktop", r = desk_word, rc = desk_col, pri = desk_pri})
-	append(&status, Piece{l = "screen", r = scr_word, rc = scr_col, pri = scr_pri})
-	append(&status, Piece{
-		r = tprintf("↑ %d  ↓ %d", sync.atomic_load(&tx_media_n), sync.atomic_load(&rx_media_n)),
-		rc = C_DIM,
-		pri = 8,
-	})
+	append(&status, Piece{l = "camera", r = cam_word, rc = cam_col, pri = 1})
+	append(&status, Piece{l = "microphone", r = mic_word, rc = mic_col, pri = 2})
+	append(&status, Piece{l = "speaker", r = spk_word, rc = spk_col, pri = 3})
+	if sync.atomic_load(&desk_send) != 0 {
+		append(&status, Piece{l = "desktop", r = "on", rc = C_GREEN, pri = 4})
+	}
+	if sync.atomic_load(&screen_send) != 0 {
+		append(&status, Piece{l = "screen", r = "on", rc = C_GREEN, pri = 4})
+	}
 	row_draw(b, rows - 1, status[:], cols)
 	if quit_armed() {
 		pre := "press "
