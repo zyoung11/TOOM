@@ -145,6 +145,39 @@ disp_width :: proc(s: string) -> int {
 	return w
 }
 
+// disp_width_plain returns the printable cell width while ignoring
+// ANSI escape sequences so styled text measures correctly.
+disp_width_plain :: proc(s: string) -> int {
+	w := 0
+	esc := false
+	for r in s {
+		if esc {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+				esc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			esc = true
+			continue
+		}
+		w += char_width(r)
+	}
+	return w
+}
+
+// key_is reports whether one key press matches the configured
+// binding.
+key_is :: proc(k: Key, binding: string) -> bool {
+	if k.kind != .Char || binding == "" {
+		return false
+	}
+	for r in binding {
+		return k.ch == r
+	}
+	return false
+}
+
 // cut_text shortens text to width cells and marks the cut with an
 // ellipsis. It writes into buf and returns the view, so the caller
 // keeps the storage alive while the string is used.

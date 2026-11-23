@@ -34,6 +34,17 @@ AppConfig :: struct {
 	cam_default:   bool   `json:"cam_default"`,
 	canvas_width:  int    `json:"canvas_width"`,
 	language:      string `json:"language"`,
+	key_quit:      string `json:"key_quit"`,
+	key_help:      string `json:"key_help"`,
+	key_mic:       string `json:"key_mic"`,
+	key_spk:       string `json:"key_spk"`,
+	key_cam:       string `json:"key_cam"`,
+	key_desk:      string `json:"key_desk"`,
+	key_share:     string `json:"key_share"`,
+	key_settings:  string `json:"key_settings"`,
+	key_layout:    string `json:"key_layout"`,
+	key_mirror:    string `json:"key_mirror"`,
+	key_code:      string `json:"key_code"`,
 }
 
 app_cfg: AppConfig
@@ -72,6 +83,17 @@ config_default :: proc() -> AppConfig {
 		cam_default = true,
 		canvas_width = 200,
 		language = strings.clone("en"),
+		key_quit = strings.clone("q"),
+		key_help = strings.clone("?"),
+		key_mic = strings.clone("m"),
+		key_spk = strings.clone("M"),
+		key_cam = strings.clone("c"),
+		key_desk = strings.clone("a"),
+		key_share = strings.clone("s"),
+		key_settings = strings.clone("p"),
+		key_layout = strings.clone("l"),
+		key_mirror = strings.clone("h"),
+		key_code = strings.clone("i"),
 	}
 }
 

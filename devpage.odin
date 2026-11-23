@@ -1226,7 +1226,9 @@ hint_draw :: proc(b: ^FB, cols, rows: int, items: [4][2]string) {
 		}
 		fb_at(b, rows, x)
 		fb_fg(b, C_YELLOW)
+		fb_str(b, "\x1b[4m")
 		fb_str(b, it[0])
+		fb_str(b, "\x1b[24m")
 		fb_fg(b, C_DIM)
 		fb_str(b, " ")
 		fb_str(b, it[1])

@@ -19,6 +19,7 @@ Piece :: struct {
 	l:   string,
 	lc:  int,
 	lb:  bool,
+	lu:  bool,
 	r:   string,
 	rc:  int,
 	rb:  bool,
@@ -262,8 +263,21 @@ footer_draw :: proc(b: ^FB) {
 	})
 	row_draw(b, rows - 1, status[:], cols)
 	if quit_armed() {
-		hint := [1]Piece{{r = "press q again to quit   any other key cancels", rc = C_RED, rb = true, pri = 0}}
-		row_draw(b, rows, hint[:], cols)
+		pre := "press "
+		post := " again to quit   any other key cancels"
+		total := disp_width(pre) + disp_width(app_cfg.key_quit) + disp_width(post)
+		x := max((cols - total) / 2 + 1, 1)
+		fb_at(b, rows, 1)
+		fb_str(b, "\x1b[K")
+		fb_at(b, rows, x)
+		fb_fg(b, C_RED)
+		fb_str(b, "\x1b[1m")
+		fb_str(b, pre)
+		fb_str(b, "\x1b[4m")
+		fb_str(b, app_cfg.key_quit)
+		fb_str(b, "\x1b[24m")
+		fb_str(b, post)
+		fb_reset(b)
 		return
 	}
 	if toast_active() {
@@ -280,16 +294,16 @@ footer_draw :: proc(b: ^FB) {
 	}
 	keys := make([dynamic]Piece, 0, 10)
 	defer delete(keys)
-	append(&keys, Piece{l = "q", r = "quit", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 1})
-	append(&keys, Piece{l = "s", r = "screen", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 2})
-	append(&keys, Piece{l = "n", r = "microphone", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 3})
-	append(&keys, Piece{l = "m", r = "speaker", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 4})
-	append(&keys, Piece{l = "c", r = "camera", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 5})
-	append(&keys, Piece{l = "a", r = "desktop", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 6})
-	append(&keys, Piece{l = "d", r = "settings", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 7})
-	append(&keys, Piece{l = "f", r = "layout", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 8})
-	append(&keys, Piece{l = "h", r = "mirror", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 9})
-	append(&keys, Piece{l = "?", r = "help", lc = C_YELLOW, lb = true, rc = C_DIM, pri = 0})
+	append(&keys, Piece{l = app_cfg.key_quit, r = "quit", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 1})
+	append(&keys, Piece{l = app_cfg.key_share, r = "screen", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 2})
+	append(&keys, Piece{l = app_cfg.key_mic, r = "microphone", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 3})
+	append(&keys, Piece{l = app_cfg.key_spk, r = "speaker", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 4})
+	append(&keys, Piece{l = app_cfg.key_cam, r = "camera", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 5})
+	append(&keys, Piece{l = app_cfg.key_desk, r = "desktop", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 6})
+	append(&keys, Piece{l = app_cfg.key_settings, r = "settings", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 7})
+	append(&keys, Piece{l = app_cfg.key_layout, r = "layout", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 8})
+	append(&keys, Piece{l = app_cfg.key_mirror, r = "mirror", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 9})
+	append(&keys, Piece{l = app_cfg.key_help, r = "help", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 0})
 	row_draw(b, rows, keys[:], cols)
 }
 
@@ -366,7 +380,13 @@ piece_draw :: proc(b: ^FB, p: Piece, max_w: int) {
 		if p.lb {
 			fb_str(b, "\x1b[1m")
 		}
+		if p.lu {
+			fb_str(b, "\x1b[4m")
+		}
 		fb_str(b, shown)
+		if p.lu {
+			fb_str(b, "\x1b[24m")
+		}
 		used += disp_width(shown)
 	}
 	if p.r != "" && used < max_w {
@@ -392,21 +412,21 @@ help_draw :: proc() {
 	cols, rows := term_size()
 	lines := [17][2]string{
 		{"", "media"},
-		{"m", "toggle speaker mute"},
-		{"n", "toggle microphone mute"},
-		{"c", "toggle camera send"},
-		{"a", "toggle system audio sharing"},
-		{"s", "toggle screen sharing"},
-		{"d", "open the settings page"},
+		{app_cfg.key_mic, "toggle microphone mute"},
+		{app_cfg.key_spk, "toggle speaker mute"},
+		{app_cfg.key_cam, "toggle camera send"},
+		{app_cfg.key_desk, "toggle system audio sharing"},
+		{app_cfg.key_share, "toggle screen sharing"},
+		{app_cfg.key_settings, "open the settings page"},
 		{"Up/Down", "raise or lower volume"},
 		{"", "layout"},
-		{"f", "cycle grid and focus layouts"},
-		{"h", "toggle mirrored self view"},
-		{"Tab ←/→", "pick the focused member"},
+		{app_cfg.key_layout, "cycle grid and focus layouts"},
+		{app_cfg.key_mirror, "toggle mirrored self view"},
+		{"Tab", "cycle the focused member"},
 		{"", "other"},
-		{"i", "show and copy the meeting code"},
-		{"?", "show or hide this page"},
-		{"q", "quit after one confirmation"},
+		{app_cfg.key_code, "show and copy the meeting code"},
+		{app_cfg.key_help, "show or hide this page"},
+		{app_cfg.key_quit, "quit after one confirmation"},
 		{"", ""},
 	}
 	width := min(56, cols - 2)

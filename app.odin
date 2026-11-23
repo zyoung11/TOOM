@@ -1378,7 +1378,7 @@ conf_key :: proc(k: Key) -> bool {
 		quit_on = false
 		return false
 	}
-	quit_key := k.kind == .Char && (k.ch == 'q' || k.ch == 'Q')
+	quit_key := key_is(k, app_cfg.key_quit)
 	if quit_key {
 		if quit_armed() {
 			return true
@@ -1395,28 +1395,23 @@ conf_key :: proc(k: Key) -> bool {
 	case .Down:
 		audio_vol_add(-0.1)
 		toast_show(tprintf("volume %d%%", vol_pct()), 0)
-	case .Tab, .Left, .Right:
-		dir := 1
-		if k.kind == .Left {
-			dir = -1
-		}
+	case .Tab:
 		n := 1 + peer_count()
-		conf_focus = ((conf_focus + dir) % n + n) % n
+		conf_focus = (conf_focus + 1) % n
 		if conf_mode == .Focus {
 			layout_apply()
 		}
 	case .FocusIn:
 		engines_repaint()
 	case .Char:
-		switch k.ch {
-		case 'm', 'M':
+		if key_is(k, app_cfg.key_spk) {
 			audio_toggle_spk()
 			if sync.atomic_load(&spk_mute) != 0 {
 				toast_show("speaker muted", 0)
 			} else {
 				toast_show("speaker on", 1)
 			}
-		case 'n', 'N':
+		} else if key_is(k, app_cfg.key_mic) {
 			audio_toggle_mic()
 			if sync.atomic_load(&mic_mute) != 0 {
 				toast_show("microphone off", 0)
@@ -1424,7 +1419,7 @@ conf_key :: proc(k: Key) -> bool {
 				toast_show("microphone on", 1)
 			}
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
-		case 'c', 'C':
+		} else if key_is(k, app_cfg.key_cam) {
 			if sync.atomic_load(&cam_ready) != 0 {
 				off := 1 - sync.atomic_load(&cam_off)
 				sync.atomic_store(&cam_off, off)
@@ -1450,7 +1445,7 @@ conf_key :: proc(k: Key) -> bool {
 				toast_show(msg, 2)
 			}
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
-		case 'f', 'F':
+		} else if key_is(k, app_cfg.key_layout) {
 			n := 1 + peer_count()
 			if conf_mode == .Grid {
 				conf_mode = .Focus
@@ -1479,14 +1474,14 @@ conf_key :: proc(k: Key) -> bool {
 			}
 			toast_show(tprintf("layout: %s", label), 1)
 			layout_apply()
-		case 'h', 'H':
+		} else if key_is(k, app_cfg.key_mirror) {
 			sync.atomic_store(&self_mirror, 1 - sync.atomic_load(&self_mirror))
 			if sync.atomic_load(&self_mirror) != 0 {
 				toast_show("mirror on", 1)
 			} else {
 				toast_show("mirror off", 0)
 			}
-		case 'a', 'A':
+		} else if key_is(k, app_cfg.key_desk) {
 			if sync.atomic_load(&desk_ready) == 0 {
 				if desk_pipeline_start() {
 					sync.atomic_store(&desk_send, 1)
@@ -1501,18 +1496,18 @@ conf_key :: proc(k: Key) -> bool {
 					toast_show("desktop audio sharing stopped", 0)
 				}
 			}
-		case 's', 'S':
+		} else if key_is(k, app_cfg.key_share) {
 			share_menu_run()
 			sync.atomic_store(&layout_dirty, 1)
-		case '?':
+		} else if key_is(k, app_cfg.key_help) {
 			ui_modal_on()
 			time.sleep(60 * time.Millisecond)
 			help_open = true
 			help_draw()
-		case 'i', 'I':
+		} else if key_is(k, app_cfg.key_code) {
 			code_modal_run()
 			sync.atomic_store(&layout_dirty, 1)
-		case 'd', 'D':
+		} else if key_is(k, app_cfg.key_settings) {
 			dev_modal_run()
 		}
 	}
