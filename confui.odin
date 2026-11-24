@@ -5,12 +5,14 @@ import "core:time"
 
 CONF_COLORS :: [7]int{2, 8, 16, 32, 64, 128, 256}
 
-// CapInfo is one caption rendered on the row below a picture.
+// CapInfo is one caption rendered on the row below a picture. The
+// own flag marks pictures of the local member.
 CapInfo :: struct {
 	t:     Tile,
 	name:  string,
 	muted: bool,
 	sel:   bool,
+	own:   bool,
 	empty: bool,
 }
 
@@ -226,6 +228,7 @@ caps_draw :: proc(b: ^FB) {
 				name  = tprintf("%s (me)", sess.name),
 				muted = sync.atomic_load(&mic_mute) != 0,
 				sel   = focused,
+				own   = true,
 				empty = sync.atomic_load(&cam_off) != 0 || sync.atomic_load(&cam_ready) == 0,
 			}
 			if self_cap.empty {
@@ -259,7 +262,7 @@ caps_draw :: proc(b: ^FB) {
 			)
 		}
 	} else if screen_local_on() {
-		conf_caption(b, CapInfo{t = self_screen_tile, name = "screen (me) [sharing]"})
+		conf_caption(b, CapInfo{t = self_screen_tile, name = "screen (me) [sharing]", own = true})
 	}
 }
 
@@ -289,9 +292,13 @@ conf_caption :: proc(b: ^FB, info: CapInfo) {
 	nbuf: [256]u8
 	shown := cut_text(body, max(width - 1 - disp_width(suffix), 1), nbuf[:])
 	fb_at(b, row, left)
-	if info.sel {
-		fb_fg(b, C_YELLOW)
+	if info.sel || info.own {
 		fb_str(b, "\x1b[1m")
+	}
+	if info.own {
+		fb_fg(b, C_BLUE)
+	} else if info.sel {
+		fb_fg(b, C_YELLOW)
 	} else {
 		fb_fg(b, C_TEXT)
 	}
@@ -332,7 +339,7 @@ toast_show :: proc(msg: string, kind: int) {
 
 // toast_active reports whether the toast is still on screen.
 toast_active :: proc() -> bool {
-	return toast_len > 0 && time.since(toast_at) < 2500 * time.Millisecond
+	return toast_len > 0 && time.since(toast_at) < 1800 * time.Millisecond
 }
 
 // footer_draw paints the centered status row and the key row.
@@ -510,6 +517,19 @@ footer_draw :: proc(b: ^FB) {
 				pri = 9,
 			},
 		)
+	} else {
+		append(
+			&keys,
+			Piece {
+				l = app_cfg.key_layout,
+				r = "swap",
+				lc = C_YELLOW,
+				lb = true,
+				lu = true,
+				rc = C_DIM,
+				pri = 9,
+			},
+		)
 	}
 	append(
 		&keys,
@@ -651,7 +671,7 @@ help_draw :: proc() {
 		{app_cfg.key_settings, "open the settings page"},
 		{"Up/Down", "raise or lower volume"},
 		{"", "layout"},
-		{app_cfg.key_layout, "switch grid and focus layouts"},
+		{app_cfg.key_layout, "switch grid and focus layouts or swap the share side"},
 		{"Tab", "rotate the member order"},
 		{app_cfg.key_mirror, "toggle mirrored self view"},
 		{"", "other"},
