@@ -3,7 +3,7 @@ package toom
 // Tile is one member block: a picture rect centered inside a cell
 // block with one caption row reserved below the picture. The rect is
 // a fixed aspect box so the border never moves when a camera toggles.
-// lim_w and lim_h cap the picture box in pixels so a whole thumbnail
+// lim_w and lim_h cap the picture box in cells so a whole thumbnail
 // strip shares one box size, zero keeps the block limit.
 Tile :: struct {
 	row, col:     int,
@@ -21,39 +21,43 @@ LayoutMode :: enum {
 	Focus,
 }
 
-// fit_pic scales a source into the max box keeping the source aspect
-// and rounds both sides down to even pixel counts.
-fit_pic :: proc(src_w, src_h, max_w, max_h: int) -> (int, int) {
-	if src_w <= 0 || src_h <= 0 || max_w < 4 || max_h < 4 {
-		return max(max_w, 4), max(max_h, 4)
+// box_cells picks the whole cell box nearest to the aspect ratio
+// that fits the limits. Width comes first so a box fills its limit
+// width and the height follows, then a height cap pulls both sides
+// in.
+box_cells :: proc(in_w, in_h, max_bw, max_bh, cw, ch: int) -> (int, int) {
+	aw := in_w
+	ah := in_h
+	if aw <= 0 || ah <= 0 {
+		aw, ah = 4, 3
 	}
-	w := max_w
-	h := w * src_h / src_w
-	if h > max_h {
-		h = max_h
-		w = h * src_w / src_h
+	if max_bw < 1 || max_bh < 1 {
+		return max(max_bw, 1), max(max_bh, 1)
 	}
-	w -= w % 2
-	h -= h % 2
-	return max(w, 4), max(h, 4)
+	pw := max_bw
+	ph := (pw * cw * ah * 2 + aw * ch) / (aw * ch * 2)
+	if ph > max_bh {
+		ph = max_bh
+		pw = min((ph * ch * aw * 2 + ah * cw) / (ah * cw * 2), max_bw)
+	}
+	return pw, ph
 }
 
 // tile_fit computes the picture rect and the caption row of one block
-// for the given box aspect.
+// for the given box aspect. The box is whole cells so text drawn at
+// the box corners lines up with the picture edges.
 tile_fit :: proc(t: ^Tile, src_w, src_h: int) {
 	cw, ch := term_cell_pixels()
-	max_w := t.bw * cw
-	max_h := (t.bh - 1) * ch
+	mbw := t.bw
+	mbh := t.bh - 1
 	if t.lim_w > 0 {
-		max_w = min(max_w, t.lim_w)
+		mbw = min(mbw, t.lim_w)
 	}
 	if t.lim_h > 0 {
-		max_h = min(max_h, t.lim_h)
+		mbh = min(mbh, t.lim_h)
 	}
-	w, h := fit_pic(src_w, src_h, max_w, max_h)
-	ph := (h + ch - 1) / ch
-	pw := (w + cw - 1) / cw
-	t.w, t.h = w, h
+	pw, ph := box_cells(src_w, src_h, mbw, mbh, cw, ch)
+	t.w, t.h = pw * cw, ph * ch
 	switch t.snap {
 	case 1:
 		t.prow = t.row + max(t.bh - 1 - ph, 0)
@@ -109,8 +113,8 @@ layout_grid :: proc(count: int) -> []Tile {
 		if bw < 4 || bh < 2 {
 			continue
 		}
-		w, h := fit_pic(4, 3, bw * cw, (bh - 1) * ch)
-		score := w * h
+		pw, ph := box_cells(4, 3, bw, bh - 1, cw, ch)
+		score := pw * ph
 		if score > best_score || (score == best_score && gc * gr < best_gc * best_gr) {
 			best_gc, best_gr, best_score = gc, gr, score
 		}
@@ -212,29 +216,25 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 			k += 1
 		}
 	} else {
-		big_px := vw * cw
-		_, ph_big := fit_pic(big_w, big_h, big_px, vh * ch)
-		ph_big_c := (ph_big + ch - 1) / ch
-		small_bw := vw / strip
-		w_small, ph_small := fit_pic(4, 3, (small_bw - 1) * cw, vh * ch * 30 / 100)
-		ph_small_c := (ph_small + ch - 1) / ch
-		total := ph_big_c + ph_small_c + 4
+		small_bw := max(vw / strip - 1, 1)
+		ph_cap := max(vh * 30 / 100, 1)
+		pw_s, ph_s := box_cells(4, 3, small_bw, ph_cap, cw, ch)
+		_, ph_big := box_cells(big_w, big_h, vw, vh, cw, ch)
+		total := ph_big + ph_s + 4
 		if total > vh {
-			ph_big_c = max(ph_big_c - (total - vh), 3)
-			total = ph_big_c + ph_small_c + 4
+			ph_big = max(ph_big - (total - vh), 3)
+			total = ph_big + ph_s + 4
 		}
-		w_big, _ := fit_pic(big_w, big_h, big_px, ph_big_c * ch)
+		pw_big, _ := box_cells(big_w, big_h, vw, ph_big, cw, ch)
 		top := 1 + off_r + max((vh - total) / 2, 0)
 		tiles[f] = Tile {
 			row  = top,
 			col  = 1 + off_c,
 			bw   = vw,
-			bh   = ph_big_c + 1,
+			bh   = ph_big + 1,
 			snap = 2,
 		}
-		strip_row := top + ph_big_c + 1 + 2
-		pw_big := (w_big + cw - 1) / cw
-		pw_s := (w_small + cw - 1) / cw
+		strip_row := top + ph_big + 1 + 2
 		bl := 1 + off_c + (vw - pw_big) / 2
 		span := max(pw_big - pw_s, 0)
 		k := 0
@@ -250,9 +250,9 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 				row   = strip_row,
 				col   = x,
 				bw    = pw_s,
-				bh    = ph_small_c + 1,
-				lim_w = w_small,
-				lim_h = ph_small,
+				bh    = ph_s + 1,
+				lim_w = pw_s,
+				lim_h = ph_s,
 				snap  = 2,
 			}
 			k += 1
@@ -279,8 +279,8 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 			if tiles[i].lim_w != 0 {
 				continue
 			}
-			tiles[i].lim_w = lbw * cw
-			tiles[i].lim_h = lbh * ch
+			tiles[i].lim_w = lbw
+			tiles[i].lim_h = lbh
 		}
 	}
 	return tiles
