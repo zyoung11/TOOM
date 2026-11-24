@@ -2,7 +2,7 @@
 
 **中文版本**: [README_CN.md](README_CN.md)
 
-Video calls in a terminal, written in Odin. H.264 and Opus over UDP through a small SFU, every picture drawn as sixel through the [Aideo](https://github.com/zyoung11/Aideo) rendering engine, vendored here as a static library. Client and server in one binary.
+Video conferencing in a terminal, written in Odin. H.264 and Opus over UDP through a small SFU, every picture drawn as sixel through the [Aideo](https://github.com/zyoung11/Aideo) rendering engine, vendored here as a static library. Client and server in one binary.
 
 ## How it works
 
