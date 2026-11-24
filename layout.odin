@@ -141,8 +141,8 @@ layout_grid :: proc(count: int) -> []Tile {
 // terminals put the strip on the right, tall terminals put it at the
 // bottom. The big block takes the given box aspect and every
 // thumbnail takes the camera box aspect. All thumbnails share one
-// box size taken from the smallest strip block so their borders and
-// captions line up.
+// box size so their borders and captions line up, and the bottom
+// strip spans the big box width so both side edges align with it.
 layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 	n := max(count, 1)
 	f := min(max(focus, 0), n - 1)
@@ -216,13 +216,14 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 		_, ph_big := fit_pic(big_w, big_h, big_px, vh * ch)
 		ph_big_c := (ph_big + ch - 1) / ch
 		small_bw := vw / strip
-		_, ph_small := fit_pic(4, 3, small_bw * cw, vh * ch * 30 / 100)
+		w_small, ph_small := fit_pic(4, 3, (small_bw - 1) * cw, vh * ch * 30 / 100)
 		ph_small_c := (ph_small + ch - 1) / ch
 		total := ph_big_c + ph_small_c + 4
 		if total > vh {
 			ph_big_c = max(ph_big_c - (total - vh), 3)
 			total = ph_big_c + ph_small_c + 4
 		}
+		w_big, _ := fit_pic(big_w, big_h, big_px, ph_big_c * ch)
 		top := 1 + off_r + max((vh - total) / 2, 0)
 		tiles[f] = Tile {
 			row  = top,
@@ -232,19 +233,27 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 			snap = 2,
 		}
 		strip_row := top + ph_big_c + 1 + 2
+		pw_big := (w_big + cw - 1) / cw
+		pw_s := (w_small + cw - 1) / cw
+		bl := 1 + off_c + (vw - pw_big) / 2
+		span := max(pw_big - pw_s, 0)
 		k := 0
 		for i in 0 ..< n {
 			if i == f {
 				continue
 			}
-			left := 1 + off_c + k * vw / strip
-			right := 1 + off_c + (k + 1) * vw / strip
+			x := bl + span / 2
+			if strip > 1 {
+				x = bl + k * span / (strip - 1)
+			}
 			tiles[i] = Tile {
-				row  = strip_row,
-				col  = left,
-				bw   = right - left - 1,
-				bh   = ph_small_c + 1,
-				snap = 2,
+				row   = strip_row,
+				col   = x,
+				bw    = pw_s,
+				bh    = ph_small_c + 1,
+				lim_w = w_small,
+				lim_h = ph_small,
+				snap  = 2,
 			}
 			k += 1
 		}
@@ -265,6 +274,9 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 	if lbw > 0 && lbh > 0 {
 		for i in 0 ..< n {
 			if i == f {
+				continue
+			}
+			if tiles[i].lim_w != 0 {
 				continue
 			}
 			tiles[i].lim_w = lbw * cw
