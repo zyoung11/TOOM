@@ -14,39 +14,10 @@ CapInfo :: struct {
 	empty: bool,
 }
 
-// avatar_rgba renders the placeholder picture for one tile: a dim
-// dot pattern on a transparent ground so the terminal shows through
-// between the dots. The border is painted by the engine.
-avatar_rgba :: proc(t: Tile) -> []u8 {
-	w, h := t.w, t.h
-	buf := make([]u8, w * h * 4)
-	cw, ch := term_cell_pixels()
-	dw := max(cw / 4, 2)
-	dh := max(ch / 6, 2)
-	for r := 0; r * ch < h; r += 1 {
-		for c := 0; c * cw < w; c += 1 {
-			if (r + c) % 2 != 0 {
-				continue
-			}
-			x0 := c * cw + (cw - dw) / 2
-			y0 := r * ch + (ch - dh) / 2
-			for y := y0; y < min(y0 + dh, h); y += 1 {
-				for x := x0; x < min(x0 + dw, w); x += 1 {
-					o := (y * w + x) * 4
-					buf[o] = 0x78
-					buf[o + 1] = 0x7f
-					buf[o + 2] = 0x94
-					buf[o + 3] = 0xff
-				}
-			}
-		}
-	}
-	return buf
-}
-
-// tile_placeholder paints the initial badge and the name over the
-// placeholder picture so a disabled camera keeps its identity. The
-// text stays inside the box interior so it never touches the border.
+// tile_placeholder paints the empty picture block with four corner
+// marks, a dim dot pattern, the initial badge and the name so a
+// disabled camera keeps its identity. It is text only: no picture
+// engine runs while the camera is off.
 tile_placeholder :: proc(b: ^FB, t: Tile, name: string) {
 	if t.bw < 2 || t.bh < 2 || t.w < 4 || t.h < 4 {
 		return
@@ -59,6 +30,31 @@ tile_placeholder :: proc(b: ^FB, t: Tile, name: string) {
 	}
 	r0 := t.prow
 	c0 := t.pcol
+	col := hex_color(app_cfg.border_color)
+	if col == 0 {
+		col = 0xd8d8d8
+	}
+	fb_str(b, tprintf("\x1b[38;2;%d;%d;%dm", u8(col >> 16), u8(col >> 8), u8(col)))
+	fb_at(b, r0, c0)
+	fb_str(b, "┌")
+	fb_at(b, r0, c0 + pcols - 1)
+	fb_str(b, "┐")
+	fb_at(b, r0 + prows - 1, c0)
+	fb_str(b, "└")
+	fb_at(b, r0 + prows - 1, c0 + pcols - 1)
+	fb_str(b, "┘")
+	fb_str(b, "\x1b[39m")
+	fb_fg(b, C_BORDER)
+	for r in 1 ..< prows - 1 {
+		fb_at(b, r0 + r, c0 + 1)
+		for c in 1 ..< pcols - 1 {
+			if (r + c) % 2 == 0 {
+				fb_str(b, "·")
+			} else {
+				fb_str(b, " ")
+			}
+		}
+	}
 	iw := pcols - 2
 	initial := rune('?')
 	for r in name {

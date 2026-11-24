@@ -143,11 +143,11 @@ hex_color :: proc(s: string) -> u32 {
 	return v
 }
 
-// EngSlot is one engine slot. The avatar flag says the engine draws
-// the placeholder picture instead of a live source.
+// EngSlot is one engine slot. A slot is empty while its camera is
+// off because the placeholder is plain text without a picture
+// engine.
 EngSlot :: struct {
-	e:      ^AideoEngine,
-	avatar: bool,
+	e: ^AideoEngine,
 }
 
 // engine_new opens one engine for the tile rect with the given fit
@@ -173,11 +173,11 @@ engine_new :: proc(src_w, src_h: int, t: Tile, fit: int) -> ^AideoEngine {
 engine_mu: sync.Mutex
 
 // slot_push pushes one frame into the engine behind one slot under
-// the engine lock. Avatar engines and text pages never take frames.
+// the engine lock. Text pages never take frames.
 slot_push :: proc(slot: ^EngSlot, f: YuvFrame) {
 	sync.mutex_lock(&engine_mu)
 	e := slot.e
-	if e != nil && !slot.avatar && sync.atomic_load(&ui_modal) == 0 {
+	if e != nil && sync.atomic_load(&ui_modal) == 0 {
 		aideo_push_yuv(e, f.y, f.u, f.v, f.sy, f.sc)
 	}
 	sync.mutex_unlock(&engine_mu)
@@ -189,7 +189,6 @@ slot_close :: proc(slot: ^EngSlot) {
 	if slot.e != nil {
 		aideo_close(slot.e)
 		slot.e = nil
-		slot.avatar = false
 		sync.mutex_unlock(&engine_mu)
 		layout_heal_schedule()
 		engines_repaint()
@@ -205,7 +204,6 @@ slot_set :: proc(slot: ^EngSlot, e: ^AideoEngine) {
 		aideo_close(slot.e)
 	}
 	slot.e = e
-	slot.avatar = false
 	sync.mutex_unlock(&engine_mu)
 	layout_heal_schedule()
 	engines_repaint()
@@ -217,13 +215,6 @@ slot_set :: proc(slot: ^EngSlot, e: ^AideoEngine) {
 // because a resize emits its own screen wipe behind the text page.
 slot_resize :: proc(slot: ^EngSlot, src_w, src_h: int, t: Tile, fit: int) {
 	sync.mutex_lock(&engine_mu)
-	if slot.avatar {
-		if slot.e != nil {
-			aideo_close(slot.e)
-		}
-		slot.e = nil
-		slot.avatar = false
-	}
 	if slot.e == nil {
 		if src_w > 0 && src_h > 0 {
 			slot.e = engine_new(src_w, src_h, t, fit)
@@ -241,48 +232,12 @@ slot_resize :: proc(slot: ^EngSlot, src_w, src_h: int, t: Tile, fit: int) {
 	layout_heal_schedule()
 }
 
-// avatar_push redraws the placeholder picture into one avatar engine.
-// The caller must hold the engine lock.
-avatar_push :: proc(slot: ^EngSlot, t: Tile) {
-	if slot.e == nil || !slot.avatar || t.w < 4 || t.h < 4 {
-		return
-	}
-	rgba := avatar_rgba(t)
-	if sync.atomic_load(&ui_modal) == 0 {
-		aideo_push_rgba(slot.e, &rgba[0], c.int(t.w * 4))
-	}
-	delete(rgba)
-}
-
-// slot_avatar turns one slot into the placeholder picture at the
-// given tile, moving the engine when it already is an avatar.
-slot_avatar :: proc(slot: ^EngSlot, t: Tile) {
-	if t.w < 4 || t.h < 4 {
-		return
-	}
-	sync.mutex_lock(&engine_mu)
-	if slot.e == nil || !slot.avatar {
-		if slot.e != nil {
-			aideo_close(slot.e)
-		}
-		slot.e = engine_new(t.w, t.h, t, FIT_STRETCH)
-		slot.avatar = true
-	} else {
-		aideo_resize(slot.e, c.int(t.w), c.int(t.h), c.int(t.prow), c.int(t.pcol))
-	}
-	avatar_push(slot, t)
-	sync.mutex_unlock(&engine_mu)
-	layout_heal_schedule()
-}
-
-// slot_repaint redraws one engine after a screen wipe: avatar engines
-// repaint their placeholder, video engines repaint their frame.
-slot_repaint :: proc(slot: ^EngSlot, t: Tile, restore: bool) {
+// slot_repaint redraws one engine after a screen wipe, either at once
+// or on its next frame.
+slot_repaint :: proc(slot: ^EngSlot, restore: bool) {
 	sync.mutex_lock(&engine_mu)
 	if slot.e != nil {
-		if slot.avatar {
-			avatar_push(slot, t)
-		} else if restore {
+		if restore {
 			aideo_restore(slot.e)
 		} else {
 			aideo_repaint(slot.e)
@@ -363,12 +318,12 @@ peer_count :: proc() -> int {
 // engines_repaint forces every engine to redraw its next frame in
 // full, for example after the screen was cleared.
 engines_repaint :: proc() {
-	slot_repaint(&self_engine, self_tile, false)
-	slot_repaint(&self_screen_engine, self_screen_tile, false)
+	slot_repaint(&self_engine, false)
+	slot_repaint(&self_screen_engine, false)
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
-		slot_repaint(&p.engine, p.tile, false)
-		slot_repaint(&p.screen_engine, p.screen_tile, false)
+		slot_repaint(&p.engine, false)
+		slot_repaint(&p.screen_engine, false)
 	}
 	sync.mutex_unlock(&peer_mu)
 }
@@ -376,12 +331,12 @@ engines_repaint :: proc() {
 // engines_restore redraws every frozen frame at once so the pictures
 // survive a terminal clear without waiting for new frames.
 engines_restore :: proc() {
-	slot_repaint(&self_engine, self_tile, true)
-	slot_repaint(&self_screen_engine, self_screen_tile, true)
+	slot_repaint(&self_engine, true)
+	slot_repaint(&self_screen_engine, true)
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
-		slot_repaint(&p.engine, p.tile, true)
-		slot_repaint(&p.screen_engine, p.screen_tile, true)
+		slot_repaint(&p.engine, true)
+		slot_repaint(&p.screen_engine, true)
 	}
 	sync.mutex_unlock(&peer_mu)
 }
@@ -497,7 +452,7 @@ layout_apply :: proc() {
 	if sync.atomic_load(&cam_ready) != 0 && sync.atomic_load(&cam_off) == 0 && self_w > 0 {
 		slot_resize(&self_engine, self_w, self_h, self_tile, FIT_COVER)
 	} else {
-		slot_avatar(&self_engine, self_tile)
+		slot_close(&self_engine)
 	}
 	sync.mutex_lock(&peer_mu)
 	for id, i in order {
@@ -513,7 +468,7 @@ layout_apply :: proc() {
 		if p.info.cam {
 			slot_resize(&p.engine, p.src_w, p.src_h, p.tile, FIT_COVER)
 		} else {
-			slot_avatar(&p.engine, p.tile)
+			slot_close(&p.engine)
 		}
 	}
 	if share_owner != 0 && n < len(tiles) {
@@ -592,11 +547,10 @@ peer_get :: proc(id: u32) -> ^PeerRT {
 }
 
 // video_frame routes one decoded remote frame into the peer engine,
-// rebuilding the engine when the source size or the engine kind
-// changes.
+// rebuilding the engine when the source size changes.
 video_frame :: proc(p: ^PeerRT, f: YuvFrame) {
 	sync.mutex_lock(&layout_mu)
-	need := p.engine.e == nil || p.engine.avatar || p.src_w != f.w || p.src_h != f.h
+	need := p.engine.e == nil || p.src_w != f.w || p.src_h != f.h
 	if need {
 		p.src_w = f.w
 		p.src_h = f.h
@@ -1593,6 +1547,7 @@ rx_thread :: proc() {
 					if !m.Screen {
 						slot_close(&p.screen_engine)
 					}
+					sync.atomic_store(&layout_dirty, 1)
 				}
 				if m.Screen {
 					screen_set_owner(m.ID)
