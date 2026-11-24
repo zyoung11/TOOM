@@ -87,7 +87,7 @@ screen_ready: i32
 screen_send:  i32
 screen_owner: u32
 mode_saved:   LayoutMode
-focus_saved:  int
+order_shift:  int
 self_screen_engine: ^AideoEngine
 self_screen_tile:   Tile
 self_screen_w:      int
@@ -244,6 +244,49 @@ peer_ids_sorted :: proc() -> [dynamic]u32 {
 	return ids
 }
 
+// display_order returns the member ids in the rotated display order
+// shared by every layout. Self takes part in the rotation so one key
+// press walks every picture through every tile.
+display_order :: proc() -> [dynamic]u32 {
+	ids := peer_ids_sorted()
+	defer delete(ids)
+	total := 1 + len(ids)
+	shift := order_shift % total
+	if shift < 0 {
+		shift += total
+	}
+	out := make([dynamic]u32, 0, total)
+	for k in 0..<total {
+		i := (k + shift) % total
+		if i == 0 {
+			append(&out, sess.self_id)
+		} else {
+			append(&out, ids[i - 1])
+		}
+	}
+	return out
+}
+
+// layout_toggle switches between the grid and focus layouts. Screen
+// sharing owns the arrangement, so the switch is ignored while a
+// share is on screen.
+layout_toggle :: proc() {
+	if screen_owner != 0 || screen_local_on() {
+		return
+	}
+	if conf_mode == .Grid {
+		conf_mode = .Focus
+	} else {
+		conf_mode = .Grid
+	}
+	label := "grid"
+	if conf_mode == .Focus {
+		label = "focus"
+	}
+	toast_show(tprintf("layout: %s", label), 1)
+	layout_apply()
+}
+
 // peer_count returns the number of remote members.
 peer_count :: proc() -> int {
 	sync.mutex_lock(&peer_mu)
@@ -354,12 +397,9 @@ layout_apply :: proc() {
 	sync.mutex_lock(&layout_mu)
 	defer sync.mutex_unlock(&layout_mu)
 	sync.atomic_store(&layout_dirty, 0)
-	ids := peer_ids_sorted()
-	defer delete(ids)
-	n := 1 + len(ids)
-	if conf_focus >= n {
-		conf_focus = 0
-	}
+	order := display_order()
+	defer delete(order)
+	n := len(order)
 	share_owner := screen_owner
 	share_local := screen_local_on()
 	share_sw := screen_sw
@@ -370,7 +410,7 @@ layout_apply :: proc() {
 	} else if conf_mode == .Grid {
 		tiles = layout_grid(n, self_w, self_h)
 	} else {
-		tiles = layout_focus(n, conf_focus, self_w, self_h)
+		tiles = layout_focus(n, 0, self_w, self_h)
 	}
 	if len(tiles) == 0 {
 		sync.atomic_store(&layout_dirty, 0)
@@ -378,8 +418,8 @@ layout_apply :: proc() {
 	}
 	for i in 0..<n {
 		src_w, src_h := self_w, self_h
-		if i > 0 {
-			p := peer_get(ids[i - 1])
+		if order[i] != sess.self_id {
+			p := peer_get(order[i])
 			if p != nil && p.src_w > 0 {
 				src_w, src_h = p.src_w, p.src_h
 			}
@@ -399,15 +439,25 @@ layout_apply :: proc() {
 		tile_fit(&tiles[n], share_sw, share_sh)
 		self_screen_tile = tiles[n]
 	}
-	self_tile = tiles[0]
+	self_idx := 0
+	for id, i in order {
+		if id == sess.self_id {
+			self_idx = i
+			break
+		}
+	}
+	self_tile = tiles[self_idx]
 	slot_resize(&self_engine, self_w, self_h, self_tile)
 	sync.mutex_lock(&peer_mu)
-	for id, i in ids {
+	for id, i in order {
+		if id == sess.self_id {
+			continue
+		}
 		p := peers[id]
 		if p == nil {
 			continue
 		}
-		p.tile = tiles[i + 1]
+		p.tile = tiles[i]
 		p.has_tile = true
 		slot_resize(&p.engine, p.src_w, p.src_h, p.tile)
 	}
@@ -826,12 +876,10 @@ screen_set_owner :: proc(id: u32) {
 	}
 	if id != 0 && screen_owner == 0 {
 		mode_saved = conf_mode
-		focus_saved = conf_focus
 	}
 	screen_owner = id
 	if id == 0 {
 		conf_mode = mode_saved
-		conf_focus = focus_saved
 	}
 	sync.atomic_store(&layout_dirty, 1)
 }
@@ -1484,11 +1532,8 @@ conf_key :: proc(k: Key) -> bool {
 		audio_vol_add(-0.1)
 		toast_show(tprintf("volume %d%%", vol_pct()), 0)
 	case .Tab:
-		n := 1 + peer_count()
-		conf_focus = (conf_focus + 1) % n
-		if conf_mode == .Focus {
-			layout_apply()
-		}
+		order_shift += 1
+		layout_apply()
 	case .FocusIn:
 		engines_restore()
 	case .Char:
@@ -1534,34 +1579,7 @@ conf_key :: proc(k: Key) -> bool {
 			}
 			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
 		} else if key_is(k, app_cfg.key_layout) {
-			n := 1 + peer_count()
-			if conf_mode == .Grid {
-				conf_mode = .Focus
-				conf_focus = 0
-			} else {
-				conf_focus += 1
-				if conf_focus >= n {
-					conf_mode = .Grid
-					conf_focus = 0
-				}
-			}
-			label := "grid"
-			if conf_mode == .Focus {
-				name := "me"
-				if conf_focus > 0 {
-					ids := peer_ids_sorted()
-					if conf_focus - 1 < len(ids) {
-						p := peer_get(ids[conf_focus - 1])
-						if p != nil {
-							name = p.info.name
-						}
-					}
-					delete(ids)
-				}
-				label = tprintf("focus %s", name)
-			}
-			toast_show(tprintf("layout: %s", label), 1)
-			layout_apply()
+			layout_toggle()
 		} else if key_is(k, app_cfg.key_mirror) {
 			sync.atomic_store(&self_mirror, 1 - sync.atomic_load(&self_mirror))
 			if sync.atomic_load(&self_mirror) != 0 {
@@ -1666,7 +1684,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	screen_clear()
 	self_engine = nil
 	self_tile = Tile{}
-	conf_focus = 0
+	order_shift = 0
 	if conf_code_tail != "" {
 		delete(conf_code_tail)
 	}

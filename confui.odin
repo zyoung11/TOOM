@@ -109,7 +109,6 @@ Piece :: struct {
 }
 
 conf_mode:      LayoutMode
-conf_focus:     int
 conf_tiles:     []Tile
 conf_code_tail: string
 conf_code_full: string
@@ -201,22 +200,26 @@ conf_draw :: proc() {
 }
 
 // caps_draw paints one caption row under every picture in display
-// order: self first, then peers by rising id.
+// order: the rotated order shared by every layout.
 caps_draw :: proc(b: ^FB) {
-	ids := peer_ids_sorted()
-	defer delete(ids)
-	self_cap := CapInfo{
-		t = self_tile,
-		name = tprintf("%s (me)", sess.name),
-		muted = sync.atomic_load(&mic_mute) != 0,
-		sel = conf_focus == 0,
-		empty = sync.atomic_load(&cam_off) != 0 || sync.atomic_load(&cam_ready) == 0,
-	}
-	if self_cap.empty {
-		tile_placeholder(b, self_cap.t, sess.name)
-	}
-	conf_caption(b, self_cap)
-	for id, i in ids {
+	order := display_order()
+	defer delete(order)
+	for id, i in order {
+		focused := conf_mode == .Focus && i == 0
+		if id == sess.self_id {
+			self_cap := CapInfo{
+				t = self_tile,
+				name = tprintf("%s (me)", sess.name),
+				muted = sync.atomic_load(&mic_mute) != 0,
+				sel = focused,
+				empty = sync.atomic_load(&cam_off) != 0 || sync.atomic_load(&cam_ready) == 0,
+			}
+			if self_cap.empty {
+				tile_placeholder(b, self_cap.t, sess.name)
+			}
+			conf_caption(b, self_cap)
+			continue
+		}
 		p := peer_get(id)
 		if p == nil {
 			continue
@@ -225,7 +228,7 @@ caps_draw :: proc(b: ^FB) {
 			t = p.tile,
 			name = p.info.name,
 			muted = !p.info.mic,
-			sel = conf_focus == i + 1,
+			sel = focused,
 			empty = !p.info.cam,
 		}
 		if cap.empty {
@@ -387,8 +390,11 @@ footer_draw :: proc(b: ^FB) {
 	append(&keys, Piece{l = app_cfg.key_cam, r = "camera", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 5})
 	append(&keys, Piece{l = app_cfg.key_desk, r = "desktop", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 6})
 	append(&keys, Piece{l = app_cfg.key_settings, r = "settings", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 7})
-	append(&keys, Piece{l = app_cfg.key_layout, r = "layout", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 8})
-	append(&keys, Piece{l = app_cfg.key_mirror, r = "mirror", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 9})
+	append(&keys, Piece{l = "Tab", r = "order", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 8})
+	if screen_owner == 0 && !screen_local_on() {
+		append(&keys, Piece{l = app_cfg.key_layout, r = "layout", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 9})
+	}
+	append(&keys, Piece{l = app_cfg.key_mirror, r = "mirror", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 10})
 	append(&keys, Piece{l = app_cfg.key_help, r = "help", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 0})
 	row_draw(b, rows, keys[:], cols)
 }
@@ -506,9 +512,9 @@ help_draw :: proc() {
 		{app_cfg.key_settings, "open the settings page"},
 		{"Up/Down", "raise or lower volume"},
 		{"", "layout"},
-		{app_cfg.key_layout, "cycle grid and focus layouts"},
+		{app_cfg.key_layout, "switch grid and focus layouts"},
+		{"Tab", "rotate the member order"},
 		{app_cfg.key_mirror, "toggle mirrored self view"},
-		{"Tab", "cycle the focused member"},
 		{"", "other"},
 		{app_cfg.key_code, "show and copy the meeting code"},
 		{app_cfg.key_help, "show or hide this page"},

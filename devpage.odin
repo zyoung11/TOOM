@@ -594,7 +594,7 @@ dev_toggle :: proc(kind: DevKind) {
 	case .Mirror:
 		conf_key(Key{kind = .Char, ch = 'h'})
 	case .Layout:
-		conf_key(Key{kind = .Char, ch = 'f'})
+		layout_toggle()
 	case .Cursor:
 		sync.atomic_store(&share_cursor, 1 - sync.atomic_load(&share_cursor))
 		if sync.atomic_load(&screen_send) != 0 {
