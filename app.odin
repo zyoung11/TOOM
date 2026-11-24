@@ -2,6 +2,7 @@ package toom
 
 import "base:runtime"
 import "core:c"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:thread"
@@ -104,6 +105,19 @@ ybuf:        []u8
 ubuf:        []u8
 vbuf:        []u8
 layout_dirty: i32
+layout_heal_pending: bool
+layout_heal_at:     time.Time
+layout_heal_mu:     sync.Mutex
+
+// layout_heal_schedule registers one delayed heal pass so a screen
+// wipe and a full repaint happen shortly after any engine lifecycle
+// event and no stale picture or hole survives the relayout.
+layout_heal_schedule :: proc() {
+	sync.mutex_lock(&layout_heal_mu)
+	layout_heal_at = time.time_add(time.now(), 250 * time.Millisecond)
+	layout_heal_pending = true
+	sync.mutex_unlock(&layout_heal_mu)
+}
 
 // hex_color parses one #rrggbb value and returns 0 on bad input so
 // the engine falls back to its default frame color.
@@ -167,6 +181,9 @@ slot_close :: proc(slot: ^^AideoEngine) {
 	if slot^ != nil {
 		aideo_close(slot^)
 		slot^ = nil
+		sync.mutex_unlock(&engine_mu)
+		layout_heal_schedule()
+		return
 	}
 	sync.mutex_unlock(&engine_mu)
 }
@@ -180,6 +197,7 @@ slot_set :: proc(slot: ^^AideoEngine, e: ^AideoEngine) {
 	}
 	slot^ = e
 	sync.mutex_unlock(&engine_mu)
+	layout_heal_schedule()
 }
 
 // slot_resize moves the engine behind a pointer slot to a new tile,
@@ -202,6 +220,7 @@ slot_resize :: proc(slot: ^^AideoEngine, src_w, src_h: int, t: Tile) {
 		aideo_resize(slot^, c.int(t.w), c.int(t.h), c.int(t.prow), c.int(t.pcol))
 	}
 	sync.mutex_unlock(&engine_mu)
+	layout_heal_schedule()
 }
 
 // peer_ids_sorted returns the display order: self first, then peers
@@ -405,6 +424,7 @@ layout_apply :: proc() {
 	delete(conf_tiles)
 	conf_tiles = tiles
 	engines_repaint()
+	layout_heal_schedule()
 }
 
 peer_add :: proc(info: PeerInfo) {
@@ -1692,6 +1712,16 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 		}
 		if sync.atomic_load(&layout_dirty) != 0 {
 			layout_apply()
+		}
+		sync.mutex_lock(&layout_heal_mu)
+		heal := layout_heal_pending && time.since(layout_heal_at) >= 0
+		if heal {
+			layout_heal_pending = false
+		}
+		sync.mutex_unlock(&layout_heal_mu)
+		if heal {
+			screen_clear()
+			engines_repaint()
 		}
 		if tmux_mode && time.since(last_full) >= TMUX_FULL_INTERVAL {
 			last_full = time.now()
