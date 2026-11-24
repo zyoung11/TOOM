@@ -183,6 +183,7 @@ slot_close :: proc(slot: ^^AideoEngine) {
 		slot^ = nil
 		sync.mutex_unlock(&engine_mu)
 		layout_heal_schedule()
+		engines_repaint()
 		return
 	}
 	sync.mutex_unlock(&engine_mu)
@@ -198,6 +199,7 @@ slot_set :: proc(slot: ^^AideoEngine, e: ^AideoEngine) {
 	slot^ = e
 	sync.mutex_unlock(&engine_mu)
 	layout_heal_schedule()
+	engines_repaint()
 }
 
 // slot_resize moves the engine behind a pointer slot to a new tile,
@@ -333,6 +335,9 @@ colors_apply :: proc() {
 		}
 	}
 	sync.mutex_unlock(&peer_mu)
+	screen_clear()
+	engines_repaint()
+	layout_heal_schedule()
 }
 
 // layout_mu serializes the tile fields against the frame threads so a
@@ -1385,6 +1390,12 @@ rx_thread :: proc() {
 					p.info.cam = m.Cam
 					p.info.mic = m.Mic
 					p.info.screen = m.Screen
+					if !m.Cam {
+						slot_close(&p.engine)
+					}
+					if !m.Screen {
+						slot_close(&p.screen_engine)
+					}
 				}
 				if m.Screen {
 					screen_set_owner(m.ID)
