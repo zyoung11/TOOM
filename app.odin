@@ -87,6 +87,7 @@ screen_ready: i32
 screen_send: i32
 screen_owner: u32
 mode_saved: LayoutMode
+share_swap: bool
 order_shift: int
 self_screen_engine: EngSlot
 self_screen_tile: Tile
@@ -288,11 +289,18 @@ display_order :: proc() -> [dynamic]u32 {
 	return out
 }
 
-// layout_toggle switches between the grid and focus layouts. Screen
-// sharing owns the arrangement, so the switch is ignored while a
-// share is on screen.
+// layout_toggle switches between the grid and focus layouts. While a
+// share is on screen it swaps the share block with the member strip
+// instead.
 layout_toggle :: proc() {
 	if screen_owner != 0 || screen_local_on() {
+		share_swap = !share_swap
+		label := "normal"
+		if share_swap {
+			label = "swapped"
+		}
+		toast_show(tprintf("share side: %s", label), 1)
+		layout_apply()
 		return
 	}
 	if conf_mode == .Grid {
@@ -414,11 +422,11 @@ layout_apply :: proc() {
 				bw, bh = share_box_aspect(sp.screen_w, sp.screen_h)
 			}
 		}
-		tiles = layout_focus(n + 1, n, bw, bh)
+		tiles = layout_focus(n + 1, n, bw, bh, share_swap)
 	} else if conf_mode == .Grid {
 		tiles = layout_grid(n)
 	} else {
-		tiles = layout_focus(n, 0, 4, 3)
+		tiles = layout_focus(n, 0, 4, 3, false)
 	}
 	if len(tiles) == 0 {
 		sync.atomic_store(&layout_dirty, 0)

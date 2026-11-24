@@ -147,7 +147,9 @@ layout_grid :: proc(count: int) -> []Tile {
 // thumbnail takes the camera box aspect. All thumbnails share one
 // box size so their borders and captions line up, and the bottom
 // strip spans the big box width so both side edges align with it.
-layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
+// The swap flag mirrors the big block and the strip along the layout
+// axis so a share can sit on either side.
+layout_focus :: proc(count, focus, big_w, big_h: int, swap: bool) -> []Tile {
 	n := max(count, 1)
 	f := min(max(focus, 0), n - 1)
 	cols, rows := term_size()
@@ -171,11 +173,16 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 	horizontal := vw * cw * 10 >= vh * ch * 11
 	if horizontal {
 		big_bw := vw * 70 / 100
-		strip_col := 1 + off_c + big_bw + 1
 		strip_bw := vw - big_bw - 1
+		big_col := 1 + off_c
+		strip_col := 1 + off_c + big_bw + 1
+		if swap {
+			big_col = 1 + off_c + strip_bw + 1
+			strip_col = 1 + off_c
+		}
 		tiles[f] = Tile {
 			row = 1 + off_r,
-			col = 1 + off_c,
+			col = big_col,
 			bw  = big_bw,
 			bh  = vh,
 		}
@@ -227,14 +234,19 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 		}
 		pw_big, _ := box_cells(big_w, big_h, vw, ph_big, cw, ch)
 		top := 1 + off_r + max((vh - total) / 2, 0)
+		big_row := top
+		strip_row := top + ph_big + 1 + 2
+		if swap {
+			strip_row = top
+			big_row = top + ph_s + 1 + 2
+		}
 		tiles[f] = Tile {
-			row  = top,
+			row  = big_row,
 			col  = 1 + off_c,
 			bw   = vw,
 			bh   = ph_big + 1,
 			snap = 2,
 		}
-		strip_row := top + ph_big + 1 + 2
 		bl := 1 + off_c + (vw - pw_big) / 2
 		span := max(pw_big - pw_s, 0)
 		k := 0
