@@ -3,13 +3,16 @@ package toom
 // Tile is one member block: a picture rect centered inside a cell
 // block with one caption row reserved below the picture. The rect is
 // a fixed aspect box so the border never moves when a camera toggles.
+// lim_w and lim_h cap the picture box in pixels so a whole thumbnail
+// strip shares one box size, zero keeps the block limit.
 Tile :: struct {
-	row, col:   int,
-	bw, bh:     int,
-	w, h:       int,
-	prow, pcol: int,
-	cap:        int,
-	snap:       i8,
+	row, col:     int,
+	bw, bh:       int,
+	lim_w, lim_h: int,
+	w, h:         int,
+	prow, pcol:   int,
+	cap:          int,
+	snap:         i8,
 }
 
 // LayoutMode is the picture arrangement cycled with f.
@@ -41,6 +44,12 @@ tile_fit :: proc(t: ^Tile, src_w, src_h: int) {
 	cw, ch := term_cell_pixels()
 	max_w := t.bw * cw
 	max_h := (t.bh - 1) * ch
+	if t.lim_w > 0 {
+		max_w = min(max_w, t.lim_w)
+	}
+	if t.lim_h > 0 {
+		max_h = min(max_h, t.lim_h)
+	}
 	w, h := fit_pic(src_w, src_h, max_w, max_h)
 	ph := (h + ch - 1) / ch
 	pw := (w + cw - 1) / cw
@@ -131,7 +140,9 @@ layout_grid :: proc(count: int) -> []Tile {
 // thumbnail strip for every other member on the centered canvas. Wide
 // terminals put the strip on the right, tall terminals put it at the
 // bottom. The big block takes the given box aspect and every
-// thumbnail takes the camera box aspect.
+// thumbnail takes the camera box aspect. All thumbnails share one
+// box size taken from the smallest strip block so their borders and
+// captions line up.
 layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 	n := max(count, 1)
 	f := min(max(focus, 0), n - 1)
@@ -236,6 +247,28 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 				snap = 2,
 			}
 			k += 1
+		}
+	}
+	lbw := 0
+	lbh := 0
+	for i in 0 ..< n {
+		if i == f {
+			continue
+		}
+		if lbw == 0 || tiles[i].bw < lbw {
+			lbw = tiles[i].bw
+		}
+		if lbh == 0 || tiles[i].bh - 1 < lbh {
+			lbh = tiles[i].bh - 1
+		}
+	}
+	if lbw > 0 && lbh > 0 {
+		for i in 0 ..< n {
+			if i == f {
+				continue
+			}
+			tiles[i].lim_w = lbw * cw
+			tiles[i].lim_h = lbh * ch
 		}
 	}
 	return tiles
