@@ -586,14 +586,9 @@ desk_block :: proc(p: ^PeerRT, data: []u8) {
 // cam_pipeline_start opens the camera, the conversion buffers and the
 // encoder so the meeting can send video. It reports whether the
 // pipeline is ready.
-cam_pipeline_start :: proc() -> bool {
-	if sync.atomic_load(&cam_ready) != 0 {
-		return true
-	}
-	cam_auto_pick()
-	if !cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
-		return false
-	}
+// cam_pipeline_build allocates the conversion buffers and the encoder
+// after the camera started streaming.
+cam_pipeline_build :: proc() -> bool {
 	self_w = cam.w
 	self_h = cam.h
 	ybuf = make([]u8, self_w * self_h)
@@ -612,6 +607,32 @@ cam_pipeline_start :: proc() -> bool {
 	}
 	sync.atomic_store(&cam_ready, 1)
 	return true
+}
+
+// cam_pipeline_start opens the camera pipeline. When the configured
+// camera cannot start every remaining camera is tried in turn so an
+// unplugged or busy device never leaves the meeting without video.
+cam_pipeline_start :: proc() -> bool {
+	if sync.atomic_load(&cam_ready) != 0 {
+		return true
+	}
+	cam_auto_pick()
+	if cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
+		return cam_pipeline_build()
+	}
+	cams := cam_enum_devs()
+	defer dev_list_free(&cams)
+	for e in cams {
+		if e.dev == cam_dev {
+			continue
+		}
+		cam_set(e.dev)
+		dev_set_name(&dev_cam_name, e.name)
+		if cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
+			return cam_pipeline_build()
+		}
+	}
+	return false
 }
 
 // audio_switch restarts the audio devices so newly picked input and
@@ -1090,7 +1111,7 @@ share_menu_run :: proc() {
 			top := max((rows - height) / 2, 1)
 			ui_panel(&b, top, left, width, height, "share target")
 			dev_col_draw(&b, left + 2, top + 2, width - 4, height - 3, opts[:], cur, 0, true, false)
-			hint_draw(&b, cols, rows, [4][2]string{{"j/k, arrows", "move"}, {"Enter", "select"}, {"q", "cancel"}, {"", ""}})
+			hint_draw(&b, cols, rows, [4][2]string{{"ws, jk, ↑↓", "move"}, {"Enter", "select"}, {"q", "cancel"}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}

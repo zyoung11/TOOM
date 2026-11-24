@@ -209,6 +209,8 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 	buf[n] = 0
 	fd := cam_open_dev(cast(cstring)&buf[0])
 	if fd < 0 {
+		cam_unlock()
+		cam_fail = "camera: device cannot be opened"
 		return false
 	}
 	cam.fd = fd

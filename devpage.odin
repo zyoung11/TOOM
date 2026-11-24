@@ -274,6 +274,10 @@ cam_enum_devs :: proc() -> [dynamic]DevEnt {
 
 cam_dev_owned: bool
 
+// cam_auto marks the auto camera mode where the meeting follows the
+// first available camera instead of one pinned device path.
+cam_auto: bool
+
 // cam_set installs the active camera path with owned storage.
 cam_set :: proc(path: string) {
 	if cam_dev_owned {
@@ -284,10 +288,19 @@ cam_set :: proc(path: string) {
 	dev_prev_have = false
 }
 
-// cam_auto_pick installs the first available camera when the current
-// camera path cannot be opened and no camera was picked by hand.
+// cam_auto_pick follows the auto mode to the first available camera
+// and falls back to the first remaining camera when the configured
+// path cannot be opened. A manual pick is honoured only while that
+// device still opens, so an unplugged camera never leaves the meeting
+// without video.
 cam_auto_pick :: proc() {
-	if dev_cam_name != "" {
+	if cam_auto {
+		cams := cam_enum_devs()
+		defer dev_list_free(&cams)
+		if len(cams) > 0 {
+			cam_set(cams[0].dev)
+			dev_set_name(&dev_cam_name, cams[0].name)
+		}
 		return
 	}
 	buf: [256]u8
@@ -393,9 +406,13 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 		}
 		delete(src)
 	case .CamDev:
+		append(opts, DevEnt{name = strings.clone(tr("Auto", "自动")), is_default = true, picked = cam_auto})
+		if cam_auto {
+			picked = 0
+		}
 		src := cam_enum_devs()
 		for &e in src {
-			e.picked = e.dev == cam_dev
+			e.picked = !cam_auto && e.dev == cam_dev
 			if e.picked {
 				picked = len(opts^)
 			}
@@ -501,8 +518,15 @@ dev_col_apply :: proc() {
 	case .AudioOut:
 		dev_set_pick(1, e)
 	case .CamDev:
-		cam_set(e.dev)
-		dev_set_name(&dev_cam_name, e.name)
+		if e.is_default {
+			cam_auto = true
+			cam_set("")
+			dev_set_name(&dev_cam_name, "")
+		} else {
+			cam_auto = false
+			cam_set(e.dev)
+			dev_set_name(&dev_cam_name, e.name)
+		}
 	case .Colors:
 		color_idx = dev_col.cur
 		colors_apply()
@@ -726,8 +750,11 @@ dev_row_value :: proc(kind: DevKind) -> (string, int) {
 		}
 		return dev_pick[1].name, C_GREEN
 	case .CamDev:
+		if cam_auto {
+			return tr("Auto", "自动"), C_GREEN
+		}
 		if dev_cam_name == "" {
-			return "default", C_GREEN
+			return cam_dev, C_GREEN
 		}
 		return dev_cam_name, C_GREEN
 	case .WinTargets:
@@ -765,7 +792,7 @@ dev_group_marked :: proc(folder: int) -> bool {
 				return true
 			}
 		case .CamDev:
-			if dev_cam_name != "" {
+			if !cam_auto {
 				return true
 			}
 		}
@@ -1266,16 +1293,9 @@ dev_hint :: proc(b: ^FB, cols, rows: int) {
 			{"Esc", tr("cancel", "取消")},
 			{"", ""},
 		}
-	} else if dev_dir == 2 {
-		items = [4][2]string{
-			{"wasd, jk, arrows", tr("move", "移动")},
-			{"Enter/Space", tr("select", "选择")},
-			{"h/q", tr("back", "返回")},
-			{"", ""},
-		}
 	} else {
 		items = [4][2]string{
-			{"wasd, hjkl, arrows", tr("move", "移动")},
+			{"wasd, hjkl, ↑↓←→", tr("move", "移动")},
 			{"Enter/Space", tr("open or toggle", "打开或切换")},
 			{"q", tr("back", "返回")},
 			{"", ""},

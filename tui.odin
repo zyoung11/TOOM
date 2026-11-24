@@ -539,7 +539,7 @@ menu_select :: proc() -> MenuChoice {
 				fb_str(&b, opt)
 				fb_reset(&b)
 			}
-			ui_hint(&b, [4][2]string{{"wasd, jk, arrows", tr("select", "选择")}, {"Enter", tr("confirm", "确认")}, {"q", tr("quit", "退出")}, {"", ""}})
+			ui_hint(&b, [4][2]string{{"ws, jk, ↑↓", tr("select", "选择")}, {"Enter", tr("confirm", "确认")}, {"q", tr("quit", "退出")}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}
@@ -673,10 +673,6 @@ form_key :: proc(fields: []Field, sel: ^int, k: Key) -> int {
 			sel^ = (idx + 1) % len(fields)
 		} else if k.ch == 'k' || k.ch == 'w' {
 			sel^ = (idx + len(fields) - 1) % len(fields)
-		} else if k.ch == 'a' {
-			sel^ = (idx + len(fields) - 1) % len(fields)
-		} else if k.ch == 'd' {
-			sel^ = (idx + 1) % len(fields)
 		} else if f.kind == .Toggle && k.ch == ' ' {
 			f.tog = !f.tog
 		}
@@ -785,7 +781,7 @@ form_join :: proc() -> FormResult {
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, [4][2]string{{"wasd, jk, arrows", tr("move", "移动")}, {"Enter", tr("confirm", "确认")}, {"Esc", tr("back", "返回")}, {"", ""}})
+			ui_hint(&b, [4][2]string{{"ws, jk, ↑↓", tr("move", "移动")}, {"Enter", tr("confirm", "确认")}, {"Esc", tr("back", "返回")}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}
@@ -930,7 +926,7 @@ form_create :: proc() -> FormResult {
 				fb_str(&b, msg)
 				fb_reset(&b)
 			}
-			ui_hint(&b, [4][2]string{{"wasd, jk, arrows", tr("move", "移动")}, {"Enter", tr("confirm", "确认")}, {"Esc", tr("back", "返回")}, {"", ""}})
+			ui_hint(&b, [4][2]string{{"ws, jk, ↑↓", tr("move", "移动")}, {"Enter", tr("confirm", "确认")}, {"Esc", tr("back", "返回")}, {"", ""}})
 			fb_end(&b)
 			need_draw = false
 		}

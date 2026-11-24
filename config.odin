@@ -64,7 +64,7 @@ config_default :: proc() -> AppConfig {
 		server = strings.clone("127.0.0.1:4400"),
 		room = strings.clone("room"),
 		name = strings.clone("user"),
-		camera = strings.clone("/dev/video0"),
+		camera = strings.clone(""),
 		width = 640,
 		height = 480,
 		fps = 15,
@@ -170,7 +170,11 @@ color_index :: proc(colors: int) -> int {
 
 // config_collect copies the live settings into the config.
 config_collect :: proc() {
-	config_set_str(&app_cfg.camera, cam_dev)
+	if cam_auto {
+		config_set_str(&app_cfg.camera, "")
+	} else {
+		config_set_str(&app_cfg.camera, cam_dev)
+	}
 	app_cfg.width = cam_w_req
 	app_cfg.height = cam_h_req
 	app_cfg.fps = app_fps
@@ -202,6 +206,7 @@ config_collect :: proc() {
 
 // config_apply installs the persisted settings as live defaults.
 config_apply :: proc() {
+	cam_auto = app_cfg.camera == ""
 	if len(app_cfg.camera) > 0 {
 		cam_set(app_cfg.camera)
 	}
