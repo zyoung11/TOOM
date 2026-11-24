@@ -405,12 +405,27 @@ layout_apply :: proc() {
 	share_sw := screen_sw
 	share_sh := screen_sh
 	tiles: []Tile
+	big_w := self_w
+	big_h := self_h
+	if share_owner != 0 {
+		sp := peer_get(share_owner)
+		if sp != nil && sp.screen_w > 0 {
+			big_w, big_h = sp.screen_w, sp.screen_h
+		}
+	} else if share_local {
+		big_w, big_h = share_sw, share_sh
+	} else if order[0] != sess.self_id {
+		p := peer_get(order[0])
+		if p != nil && p.src_w > 0 {
+			big_w, big_h = p.src_w, p.src_h
+		}
+	}
 	if share_owner != 0 || share_local {
-		tiles = layout_focus(n + 1, n, self_w, self_h)
+		tiles = layout_focus(n + 1, n, big_w, big_h, self_w, self_h)
 	} else if conf_mode == .Grid {
 		tiles = layout_grid(n, self_w, self_h)
 	} else {
-		tiles = layout_focus(n, 0, self_w, self_h)
+		tiles = layout_focus(n, 0, big_w, big_h, self_w, self_h)
 	}
 	if len(tiles) == 0 {
 		sync.atomic_store(&layout_dirty, 0)
@@ -544,6 +559,7 @@ video_frame :: proc(p: ^PeerRT, f: YuvFrame) {
 	if need {
 		p.src_w = f.w
 		p.src_h = f.h
+		sync.atomic_store(&layout_dirty, 1)
 		if !p.has_tile {
 			sync.mutex_unlock(&layout_mu)
 			return
@@ -993,6 +1009,7 @@ screen_preview :: proc(f: YuvFrame) {
 	if need {
 		self_screen_w = f.w
 		self_screen_h = f.h
+		sync.atomic_store(&layout_dirty, 1)
 		if self_screen_tile.bw == 0 {
 			sync.mutex_unlock(&layout_mu)
 			return
@@ -1012,6 +1029,7 @@ screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
 	if need {
 		p.screen_w = f.w
 		p.screen_h = f.h
+		sync.atomic_store(&layout_dirty, 1)
 		if p.screen_tile.bw == 0 {
 			sync.mutex_unlock(&layout_mu)
 			return

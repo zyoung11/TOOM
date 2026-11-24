@@ -369,18 +369,12 @@ desk_find_monitor :: proc() -> (ma.device_id, bool) {
 	if id, ok := dev_audio_id(false); ok {
 		target = id_str(&id)
 	}
-	outs := audio_enum_devs(false)
 	if target == "" {
-		for j in 1..<len(outs) {
-			e := &outs[j]
-			if e.is_default {
-				target = id_str(&e.id)
-				break
-			}
-		}
+		sel: ma.device_id
+		pulse_default_id(&sel, false)
+		target = id_str(&sel)
 	}
 	if target == "" {
-		dev_list_free(&outs)
 		toast_show("desktop audio: no default sink", 2)
 		return {}, false
 	}
@@ -396,7 +390,6 @@ desk_find_monitor :: proc() -> (ma.device_id, bool) {
 			break
 		}
 	}
-	dev_list_free(&outs)
 	dev_list_free(&mons)
 	if !ok {
 		toast_show(tprintf("desktop audio: no monitor for %s", target), 2)
@@ -413,7 +406,6 @@ desk_start :: proc() -> bool {
 	}
 	id, ok := desk_find_monitor()
 	if !ok {
-		toast_show("desktop audio: no monitor source", 2)
 		return false
 	}
 	ring_init(&desk_ring, AUDIO_RATE * 2 * 2)

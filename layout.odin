@@ -116,7 +116,7 @@ layout_grid :: proc(count, src_w, src_h: int) -> []Tile {
 // thumbnail strip for every other member on the centered canvas. Wide
 // terminals put the strip on the right, tall terminals put it at the
 // bottom.
-layout_focus :: proc(count, focus, src_w, src_h: int) -> []Tile {
+layout_focus :: proc(count, focus, big_w, big_h, small_w, small_h: int) -> []Tile {
 	n := max(count, 1)
 	f := min(max(focus, 0), n - 1)
 	cols, rows := term_size()
@@ -143,23 +143,35 @@ layout_focus :: proc(count, focus, src_w, src_h: int) -> []Tile {
 			if i == f {
 				continue
 			}
+			if strip == 2 {
+				if k == 0 {
+					tiles[i] = Tile{row = 1 + off_r, col = strip_col, bw = strip_bw, bh = vh / 2 - 1, snap = 1}
+				} else {
+					tiles[i] = Tile{row = 1 + off_r + vh / 2, col = strip_col, bw = strip_bw, bh = vh - vh / 2, snap = 2}
+				}
+				k += 1
+				continue
+			}
 			top := 1 + off_r + k * vh / strip
 			bot := 1 + off_r + (k + 1) * vh / strip
 			tiles[i] = Tile{row = top, col = strip_col, bw = strip_bw, bh = bot - top}
-			if strip == 2 {
-				if k == 0 {
-					tiles[i].snap = 1
-				} else {
-					tiles[i].snap = 2
-				}
-			}
 			k += 1
 		}
 	} else {
-		big_bh := vh * 70 / 100
-		strip_row := 1 + off_r + big_bh + 1
-		strip_bh := vh - big_bh - 1
-		tiles[f] = Tile{row = 1 + off_r, col = 1 + off_c, bw = vw, bh = big_bh}
+		big_px := vw * cw
+		_, ph_big := fit_pic(big_w, big_h, big_px, vh * ch)
+		ph_big_c := (ph_big + ch - 1) / ch
+		small_bw := vw / strip
+		_, ph_small := fit_pic(small_w, small_h, small_bw * cw, vh * ch * 30 / 100)
+		ph_small_c := (ph_small + ch - 1) / ch
+		total := ph_big_c + ph_small_c + 4
+		if total > vh {
+			ph_big_c = max(ph_big_c - (total - vh), 3)
+			total = ph_big_c + ph_small_c + 4
+		}
+		top := 1 + off_r + max((vh - total) / 2, 0)
+		tiles[f] = Tile{row = top, col = 1 + off_c, bw = vw, bh = ph_big_c + 1, snap = 2}
+		strip_row := top + ph_big_c + 1 + 2
 		k := 0
 		for i in 0..<n {
 			if i == f {
@@ -167,7 +179,7 @@ layout_focus :: proc(count, focus, src_w, src_h: int) -> []Tile {
 			}
 			left := 1 + off_c + k * vw / strip
 			right := 1 + off_c + (k + 1) * vw / strip
-			tiles[i] = Tile{row = strip_row, col = left, bw = right - left, bh = strip_bh}
+			tiles[i] = Tile{row = strip_row, col = left, bw = right - left, bh = ph_small_c + 1, snap = 2}
 			k += 1
 		}
 	}
