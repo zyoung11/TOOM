@@ -1,170 +1,91 @@
 # TOOM
 
-终端内的多人视频会议。摄像头与麦克风采集后经 UDP 发到服务端转发，画面用
-sixel 渲染在终端里，房间不超过 10 人，音频客户端混音。
+**中文版本**: [README_CN.md](README_CN.md)
 
-## 架构
+Video calls in a terminal, written in Odin. H.264 and Opus over UDP through a small SFU, every picture drawn as sixel through the [Aideo](https://github.com/zyoung11/Aideo) rendering engine, vendored here as a static library. Client and server in one binary.
 
-1. `toom`（Odin）：单二进制双模式。无参数进 TUI 客户端，入会表单、采集、
-   H.264 与 Opus 编解码、多画面渲染、混音。子命令 `run` 等跑 SFU 服务端，
-   管理房间与成员，挑战应答入会，媒体数据报原样转发。
-2. 渲染引擎走 Aideo 的 C ABI（`aideo/libaideo.a` 加 `aideo.h`），`aideo/miniaudio`
-   为自带的 miniaudio 绑定，AVX2 量化内核随源码。本仓库自包含。
+## How it works
 
-## 构建
+- Every client talks only to the server and all data is relayed through it, there is no peer-to-peer path
+- UDP single port, default 4400. Join is an HMAC-SHA256 challenge-response keyed by the meeting code
+- Media is end-to-end encrypted with XChaCha20-Poly1305, the server forwards ciphertext only
+- Camera tiles are 4:3, share tiles are 16:9 or 16:10. The boxes are fixed so the border never moves
 
-依赖：odin、cc、git、cmake、meson、ninja、nasm。
+## Features
 
-```bash
-sh build.sh              # webrtc 静态库、x264、libopus、dav1d、静态 FFmpeg、垫片、二进制
-```
+- Sixel video in the terminal, screen sharing, system audio sharing
+- H.264 via x264, NVENC or VAAPI with runtime fallback to x264
+- Opus audio with webrtc echo cancellation
+- Grid and focus layouts, configurable keys and picture border
+- Static binary, runs on any glibc distribution
 
-## 运行
+## Build
 
-服务端只有一个端口设置，不传 `--port` 默认 4400。
-
-服务端命令：
+Dependencies: `odin`, `cc`, `git`, `cmake`, `meson`, `ninja`, `nasm`.
 
 ```bash
-./toom run                      # 前台运行，默认端口 4400
-./toom run --port 4400 --log    # 指定端口并写 toom.log
-sudo ./toom install --port 4400 # 安装 systemd 服务并开机自启
-sudo ./toom uninstall           # 停止并移除服务
-./toom status --port 4400       # 服务状态、端口应答与转发计数
+sh build.sh
 ```
 
-客户端两步走：
+## Usage
 
-1. 一方在 TUI 里选「创建房间」，输入服务器地址与房间名，拿到会议码。
-2. 出码页按 Enter 会把会议码复制进剪贴板并入会，支持 wl-copy、xclip、xsel、pbcopy。
-3. 另一方填名称与会议码，选「加入会议」。
+### Server
 
-首页「Settings」入口在入会前修改全部设置。首页的麦克风、扬声器与摄像头开关
-修改的是入会默认状态（`mic_default`、`spk_default`、`cam_default`），
-会议内的同名开关才控制实时状态。表单里的摄像头、麦克风开关提交后
-写回配置作为新默认。
+```bash
+./toom run                      # foreground, default port 4400
+./toom run --port 4400 --log    # write toom.log
+sudo ./toom install --port 4400 # systemd service, auto-start
+sudo ./toom uninstall           # stop and remove the service
+./toom status --port 4400       # rooms, members and traffic
+```
 
-导航支持 `wasd`、`hjkl` 与方向键。表单里的服务器、房间名与名称
-自动填入上次的值，创建页参数齐全时光标直接停在「Create and join」，
-加入页光标停在「Meeting code」。会议码不保存。
+### Client
 
-所有可配置项存在 `~/.config/toom/config.json`，首次运行自动创建，
-字段齐全可手改。程序内修改设置、提交表单、退出会议都会写回该文件。
-`border_px` 是每个画面四周的边框像素宽度，`border_color` 是边框颜色
-（`#rrggbb`），两者都可手改。
+```bash
+./toom                # meeting TUI
+./toom --json <json>  # join from json
+```
 
-加入与创建页的摄像头、麦克风开关只决定入会初始状态，会议内随时可开可关。
-采集列表只列真实输入设备，`.monitor` 回环监听源不显示。
+Create a room to get a meeting code, or join with one. The code is the join credential. The TUI refuses to run inside tmux.
 
-设置页是三层浏览列，仿 BM 媒体库的文件夹层级：左列三组（声音、画面、
-共享），中列是组内设置行，右侧是选项列或淡显预览。带 ▸ 的行是文件夹，
-进入后在选项列里回车单选，选完光标不动。
-开关与布局在行上回车或空格切换，音量回车输数字。
-声音组含麦克风、扬声器、系统音频、音量、输入设备、输出设备。
-画面组含摄像头、镜像、色数、布局、摄像头设备。
-共享组含光标开关与窗口开关。窗口开关控制共享菜单是否列出窗口，默认关。
-摄像头未手动选择时，开启摄像头自动探测第一个可用设备。
+### Options
 
-| 选项 | 功能 |
-| --- | --- |
-| `-d <path>` | 摄像头设备，默认 `/dev/video0` |
-| `-s <WxH>` | 采集尺寸，默认 640x480 |
-| `-f <n>` | 帧率，1 至 60，默认 15 |
-| `-b <n>` | 视频码率 kbps，默认 300 |
-| `--enc <n>` | 编码后端，auto x264 vaapi nvenc |
-| `-h, --help` | 帮助页 |
-| `--version` | 版本 |
+| Option | Function |
+|------|------|
+| `--json <json>` | Apply config fields and join a meeting from json |
+| `-h, --help` | Help page |
+| `-V, --version` | Version |
 
-## 按键
+### Shortcuts
 
-默认键位，可在 `~/.config/toom/config.json` 的 `key_*` 字段修改，
-帮助页与底部提示随配置变化。
+Defaults. The `key_*` fields in the config change them.
 
-| 键 | 功能 |
-| --- | --- |
-| `q` | 退出，3 秒内再按一次确认，`ESC` 取消 |
-| `m` | 麦克风开 / 关，首次开启才启动采集发送 |
-| `Shift+M` | 扬声器静音 / 取消静音 |
-| `c` | 摄像头开 / 关，首次开启才启动采集编码 |
-| `a` | 系统音频共享开 / 关，立体声独立流传给对方 |
-| `s` | 共享目标菜单：选显示器或窗口后开始共享，共享中可停止或换目标 |
-| `p` | 设置页：声音、画面、共享三组设置 |
-| `↑` / `↓` | 音量增 / 减 |
-| `l` | 布局循环：自适应网格 / 焦点大图。共享中改为切换共享画面与成员的相对位置 |
-| `h` | 本地预览水平镜像切换，默认镜像，传出画面不镜像 |
-| `Tab` | 轮流切换焦点成员（focus 布局的大图） |
-| `i` | 显示并复制会议码 |
-| `?` | 帮助页，任意键关闭 |
+| Key | Function |
+|------|------|
+| `q` | Quit, twice within 3 seconds confirms |
+| `m` | Microphone on / off |
+| `Shift+M` | Speaker mute / unmute |
+| `c` | Camera on / off |
+| `a` | System audio sharing on / off |
+| `s` | Share menu: monitor or window |
+| `p` | Settings: sound, picture, sharing |
+| `↑` / `↓` | Volume up / down |
+| `l` | Cycle grid and focus layouts; swap the share block with the members while sharing |
+| `h` | Mirror the local preview only |
+| `Tab` | Cycle the focused member |
+| `i` | Show and copy the meeting code |
+| `?` | Help page |
 
-## 会议界面
+## Configuration
 
-布局自动适应终端尺寸与人数，画面四周有像素边框圈出显示区域，
-画面下方一行说明行显示名字与静音状态，自己的名字加粗蓝色。边框
-比例固定：摄像头块
-恒为最接近 4:3 的整格比例，开关摄像头只换内容，边框不移动。
+Everything is in `~/.config/toom/config.json`, written back on every change. `key_*` fields are the shortcuts. Camera device, capture size, frame rate, bitrate and encoder backend are settings here, not flags.
 
-- 摄像头画面：宽高比不同时等比放大，居中裁切铺满整框。
-- 共享画面：框为最接近 16:9 或 16:10 的整格比例，取更接近内容
-  宽高比的一个。内容等比缩进框内完整可见，留边不画 sixel，透出
-  终端底色。
-- 摄像头关闭：纯文字绘制，不创建画面引擎。框内铺淡点阵，居中
-  显示首字母圆章与名字，四角用 Unicode 直角标出画面范围，与画面
-  边缘同格对齐，颜色取 `border_color`。
-有人共享屏幕时，接收方自动切到屏幕大图布局。共享中按 `l` 可把共享
-画面与成员条互换位置：左右布局换左右，上下布局换上下。
+## Limitations
 
-- `grid`（默认）：按画面面积选网格，两人在宽终端左右排、窄终端上下排。
-  空格子保持空白。
-- `focus`：选中成员占七成大图，其余进缩略条。宽终端缩略条在右，窄终端在下。
-- 底部两行：状态行加按键行。状态行只列开启的共享项。窄终端按优先级丢段，永不折行。
-- 画面高度留安全区，sixel 尾部换行不触发屏幕滚动。
+- IPv4 only, no NAT traversal. The server must be reachable by UDP
+- The meeting code is the join credential
+- Window sharing needs niri, floating windows only for now
 
-## 协议
+## License
 
-UDP 单端口全双工。6 字节信封（版本、类型、大端长度）加消息体。
-
-- 控制消息为 JSON，含建房、挑战应答入会、保活、成员事件、订阅。
-- 媒体消息为二进制：媒体头 18 字节（发送者、序号、时间戳、流类型、分片）与分片载荷一起在密文内。
-- 加密照搬 nz：入会 HMAC-SHA256 挑战应答，媒体 XChaCha20-Poly1305 全程加密。
-- 密钥两级：`k_join = SHA256(secret + "join")` 存服务端验证入会，`k_media =
-  SHA256(secret + "media")` 只在客户端，服务端无法解媒体。
-
-## 依赖产物
-
-| 库 | 用途 |
-| --- | --- |
-| `libavcodec` `libavutil` 等 | H.264 与 MJPEG 编解码，Aideo 播放器路径 |
-| `libx264` `h264_nvenc` `h264_vaapi` | 视频编码三后端，运行时探测回退 |
-| `libopus` | 音频编解码，48 kHz 单声道 20 ms |
-| `webrtc-audio-processing` | 回声消除与降噪，含 abseil 全静态 |
-| `libstdc++` `libgcc` | C++ 运行时，静态链入 |
-| `miniaudio` | 麦克风采集与扬声器播放 |
-| `avx2_quant.o` | sixel 量化，AVX2 内核 |
-
-二进制只动态依赖 glibc 基础件（libc、libm、ld-linux），其余全部静态，
-丢到任何 glibc 发行版都能启动。GPU 编码：NVIDIA 走 NVENC，Intel 与 AMD
-走 VAAPI，驱动库均在运行期 dlopen 探测，缺失只影响该后端，全部失败回退
-libx264。
-
-## 测试
-
-验证一条完整链路：`toom run` 启动 SFU，两个终端各开一个 TUI 客户端，
-一方创建房间，另一方用会议码加入，确认画面与声音互通。
-`toom status` 查房间数、成员数与转发计数。
-
-## 更新 Aideo
-
-在 Aideo 仓库执行 `odin build . -build-mode:static -out:libaideo.a`，
-把 `libaideo.a` 与 `aideo.h` 复制进 `aideo/`。C ABI 未变时 TOOM 零改动。
-miniaudio 绑定独立于 Aideo，只跟 miniaudio 上游。
-
-帮助页：`./toom --help` 为命令总览，`./toom run --help` 等为子命令页。
-
-## 限制
-
-- 局域网 IPv4 直连，不做 NAT 穿透。
-- TUI 不支持 tmux。检测到 tmux 环境时客户端拒绝启动，服务端命令不受影响。
-- x264 为 GPL v2 起，本项目按 GPL-3.0 或更高发布，见 `LICENSE`。
-- 会议码是入会凭证，泄露即可入会。房间无人即关闭，同名可重建；从未入会的房间 30 分钟回收。
-- 窗口共享依赖 niri 的窗口位置 IPC。niri 26.04 只提供浮动窗口的位置，
-  平铺窗口要等 niri 新版本发布后自动可用。
+GPL-3.0-or-later, see [LICENSE](LICENSE). x264 is GPL v2 or later.
