@@ -231,7 +231,7 @@ layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 			tiles[i] = Tile {
 				row  = strip_row,
 				col  = left,
-				bw   = right - left,
+				bw   = right - left - 1,
 				bh   = ph_small_c + 1,
 				snap = 2,
 			}
