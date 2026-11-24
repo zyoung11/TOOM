@@ -14,11 +14,41 @@ CapInfo :: struct {
 	empty: bool,
 }
 
-// tile_placeholder paints the empty picture block with a dim dot
-// pattern, an initial badge and the name so a disabled camera never
-// leaves a void.
+// avatar_rgba renders the placeholder picture for one tile: a dim
+// dot pattern on a transparent ground so the terminal shows through
+// between the dots. The border is painted by the engine.
+avatar_rgba :: proc(t: Tile) -> []u8 {
+	w, h := t.w, t.h
+	buf := make([]u8, w * h * 4)
+	cw, ch := term_cell_pixels()
+	dw := max(cw / 4, 2)
+	dh := max(ch / 6, 2)
+	for r := 0; r * ch < h; r += 1 {
+		for c := 0; c * cw < w; c += 1 {
+			if (r + c) % 2 != 0 {
+				continue
+			}
+			x0 := c * cw + (cw - dw) / 2
+			y0 := r * ch + (ch - dh) / 2
+			for y := y0; y < min(y0 + dh, h); y += 1 {
+				for x := x0; x < min(x0 + dw, w); x += 1 {
+					o := (y * w + x) * 4
+					buf[o] = 0x78
+					buf[o + 1] = 0x7f
+					buf[o + 2] = 0x94
+					buf[o + 3] = 0xff
+				}
+			}
+		}
+	}
+	return buf
+}
+
+// tile_placeholder paints the initial badge and the name over the
+// placeholder picture so a disabled camera keeps its identity. The
+// text stays inside the box interior so it never touches the border.
 tile_placeholder :: proc(b: ^FB, t: Tile, name: string) {
-	if t.bw < 4 || t.bh < 3 || t.w < 4 || t.h < 4 {
+	if t.bw < 2 || t.bh < 2 || t.w < 4 || t.h < 4 {
 		return
 	}
 	cw, ch := term_cell_pixels()
@@ -29,47 +59,7 @@ tile_placeholder :: proc(b: ^FB, t: Tile, name: string) {
 	}
 	r0 := t.prow
 	c0 := t.pcol
-	col := hex_color(app_cfg.border_color)
-	if col == 0 {
-		col = 0xd8d8d8
-	}
-	fb_str(b, tprintf("\x1b[38;2;%d;%d;%dm", u8(col >> 16), u8(col >> 8), u8(col)))
-	for c in 0..<pcols {
-		top := "─"
-		if c == 0 {
-			top = "┌"
-		} else if c == pcols - 1 {
-			top = "┐"
-		}
-		bottom := "─"
-		if c == 0 {
-			bottom = "└"
-		} else if c == pcols - 1 {
-			bottom = "┘"
-		}
-		fb_at(b, r0, c0 + c)
-		fb_str(b, top)
-		fb_at(b, r0 + prows - 1, c0 + c)
-		fb_str(b, bottom)
-	}
-	for r in 1..<prows - 1 {
-		fb_at(b, r0 + r, c0)
-		fb_str(b, "│")
-		fb_at(b, r0 + r, c0 + pcols - 1)
-		fb_str(b, "│")
-	}
-	fb_str(b, "\x1b[39m")
-	fb_fg(b, C_BORDER)
-	for r in 1..<prows - 1 {
-		fb_at(b, r0 + r, c0 + 1)
-		for c in 1..<pcols - 1 {
-			if (r + c) % 2 == 0 {
-				fb_str(b, "·")
-			} else {
-				fb_str(b, " ")
-			}
-		}
-	}
+	iw := pcols - 2
 	initial := rune('?')
 	for r in name {
 		initial = r
@@ -78,18 +68,35 @@ tile_placeholder :: proc(b: ^FB, t: Tile, name: string) {
 	if initial >= 'a' && initial <= 'z' {
 		initial -= 32
 	}
-	badge := tprintf("(%c)", initial)
-	cy := r0 + max(prows / 2 - 1, 0)
-	bx := c0 + max((pcols - disp_width(badge)) / 2, 0)
-	fb_at(b, cy, bx)
+	nbuf: [256]u8
+	badge := cut_text(tprintf("(%c)", initial), iw, nbuf[:])
+	if prows >= 4 {
+		cy := r0 + 1 + (prows - 4) / 2
+		bx := c0 + 1 + max((iw - disp_width(badge)) / 2, 0)
+		fb_at(b, cy, bx)
+		fb_fg(b, C_BLUE)
+		fb_str(b, "\x1b[1m")
+		fb_str(b, badge)
+		fb_reset(b)
+		nbuf2: [256]u8
+		shown := cut_text(name, iw, nbuf2[:])
+		nx := c0 + 1 + max((iw - disp_width(shown)) / 2, 0)
+		fb_at(b, cy + 1, nx)
+		fb_fg(b, C_TEXT)
+		fb_str(b, shown)
+		fb_reset(b)
+		return
+	}
+	nbuf2: [256]u8
+	shown := cut_text(name, max(iw - disp_width(badge) - 1, 1), nbuf2[:])
+	total := disp_width(badge) + 1 + disp_width(shown)
+	lx := c0 + 1 + max((iw - total) / 2, 0)
+	fb_at(b, r0 + 1, lx)
 	fb_fg(b, C_BLUE)
 	fb_str(b, "\x1b[1m")
 	fb_str(b, badge)
 	fb_reset(b)
-	nbuf: [256]u8
-	shown := cut_text(name, pcols, nbuf[:])
-	nx := c0 + max((pcols - disp_width(shown)) / 2, 0)
-	fb_at(b, cy + 1, nx)
+	fb_str(b, " ")
 	fb_fg(b, C_TEXT)
 	fb_str(b, shown)
 	fb_reset(b)
@@ -108,14 +115,14 @@ Piece :: struct {
 	pri: int,
 }
 
-conf_mode:      LayoutMode
-conf_tiles:     []Tile
+conf_mode: LayoutMode
+conf_tiles: []Tile
 conf_code_tail: string
 conf_code_full: string
-color_idx:      int = 4
-help_open:      bool
-quit_on:        bool
-quit_at:        time.Time
+color_idx: int = 4
+help_open: bool
+quit_on: bool
+quit_at: time.Time
 
 // quit_armed reports whether the quit confirmation is still pending.
 quit_armed :: proc() -> bool {
@@ -164,10 +171,21 @@ code_modal_run :: proc() {
 		if copied {
 			fb_str(&b, tr("copied to clipboard", "已复制到剪贴板"))
 		} else {
-			fb_str(&b, tr("clipboard unavailable, select the code above", "剪贴板不可用，请手动选中上方代码"))
+			fb_str(
+				&b,
+				tr(
+					"clipboard unavailable, select the code above",
+					"剪贴板不可用，请手动选中上方代码",
+				),
+			)
 		}
 		fb_reset(&b)
-		hint_draw(&b, cols, rows, [4][2]string{{"q/Esc", tr("close", "关闭")}, {"", ""}, {"", ""}, {"", ""}})
+		hint_draw(
+			&b,
+			cols,
+			rows,
+			[4][2]string{{"q/Esc", tr("close", "关闭")}, {"", ""}, {"", ""}, {"", ""}},
+		)
 		fb_end(&b)
 		k := key_next()
 		if k.kind == .Quit || k.kind == .Enter {
@@ -207,11 +225,11 @@ caps_draw :: proc(b: ^FB) {
 	for id, i in order {
 		focused := conf_mode == .Focus && i == 0
 		if id == sess.self_id {
-			self_cap := CapInfo{
-				t = self_tile,
-				name = tprintf("%s (me)", sess.name),
+			self_cap := CapInfo {
+				t     = self_tile,
+				name  = tprintf("%s (me)", sess.name),
 				muted = sync.atomic_load(&mic_mute) != 0,
-				sel = focused,
+				sel   = focused,
 				empty = sync.atomic_load(&cam_off) != 0 || sync.atomic_load(&cam_ready) == 0,
 			}
 			if self_cap.empty {
@@ -224,11 +242,11 @@ caps_draw :: proc(b: ^FB) {
 		if p == nil {
 			continue
 		}
-		cap := CapInfo{
-			t = p.tile,
-			name = p.info.name,
+		cap := CapInfo {
+			t     = p.tile,
+			name  = p.info.name,
 			muted = !p.info.mic,
-			sel = focused,
+			sel   = focused,
 			empty = !p.info.cam,
 		}
 		if cap.empty {
@@ -239,7 +257,10 @@ caps_draw :: proc(b: ^FB) {
 	if screen_owner != 0 {
 		p := peer_get(screen_owner)
 		if p != nil && p.screen_tile.bw > 0 {
-			conf_caption(b, CapInfo{t = p.screen_tile, name = tprintf("%s [sharing]", p.info.name)})
+			conf_caption(
+				b,
+				CapInfo{t = p.screen_tile, name = tprintf("%s [sharing]", p.info.name)},
+			)
 		}
 	} else if screen_local_on() {
 		conf_caption(b, CapInfo{t = self_screen_tile, name = "screen (me) [sharing]"})
@@ -257,7 +278,7 @@ conf_caption :: proc(b: ^FB, info: CapInfo) {
 		return
 	}
 	fb_at(b, row, left)
-	for _ in 0..<width {
+	for _ in 0 ..< width {
 		fb_str(b, " ")
 	}
 	suffix := ""
@@ -301,7 +322,7 @@ state_word :: proc(enabled, active: bool) -> (string, int) {
 toast_buf: [96]u8
 toast_len: int
 toast_kind: int
-toast_at:  time.Time
+toast_at: time.Time
 
 // toast_show records a transient message for the key row. Kind 1 is
 // success, 2 is failure and 0 is plain information.
@@ -321,11 +342,20 @@ toast_active :: proc() -> bool {
 // footer_draw paints the centered status row and the key row.
 footer_draw :: proc(b: ^FB) {
 	cols, rows := term_size()
-	cam_word, cam_col := state_word(sync.atomic_load(&cam_ready) != 0, sync.atomic_load(&send_video) != 0)
+	cam_word, cam_col := state_word(
+		sync.atomic_load(&cam_ready) != 0,
+		sync.atomic_load(&send_video) != 0,
+	)
 	mic_word, mic_col := state_word(mic_enabled, sync.atomic_load(&mic_mute) == 0)
 	spk_word, spk_col := state_word(audio_ok, sync.atomic_load(&spk_mute) == 0)
-	desk_word, desk_col := state_word(sync.atomic_load(&desk_ready) != 0, sync.atomic_load(&desk_send) != 0)
-	scr_word, scr_col := state_word(sync.atomic_load(&screen_ready) != 0, sync.atomic_load(&screen_send) != 0)
+	desk_word, desk_col := state_word(
+		sync.atomic_load(&desk_ready) != 0,
+		sync.atomic_load(&desk_send) != 0,
+	)
+	scr_word, scr_col := state_word(
+		sync.atomic_load(&screen_ready) != 0,
+		sync.atomic_load(&screen_send) != 0,
+	)
 	cam_pri := 5
 	if sync.atomic_load(&send_video) != 0 {
 		cam_pri = 1
@@ -383,19 +413,132 @@ footer_draw :: proc(b: ^FB) {
 	}
 	keys := make([dynamic]Piece, 0, 10)
 	defer delete(keys)
-	append(&keys, Piece{l = app_cfg.key_quit, r = "quit", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 1})
-	append(&keys, Piece{l = app_cfg.key_share, r = "screen", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 2})
-	append(&keys, Piece{l = app_cfg.key_mic, r = "microphone", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 3})
-	append(&keys, Piece{l = app_cfg.key_spk, r = "speaker", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 4})
-	append(&keys, Piece{l = app_cfg.key_cam, r = "camera", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 5})
-	append(&keys, Piece{l = app_cfg.key_desk, r = "desktop", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 6})
-	append(&keys, Piece{l = app_cfg.key_settings, r = "settings", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 7})
-	append(&keys, Piece{l = "Tab", r = "order", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 8})
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_quit,
+			r = "quit",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 1,
+		},
+	)
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_share,
+			r = "screen",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 2,
+		},
+	)
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_mic,
+			r = "microphone",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 3,
+		},
+	)
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_spk,
+			r = "speaker",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 4,
+		},
+	)
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_cam,
+			r = "camera",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 5,
+		},
+	)
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_desk,
+			r = "desktop",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 6,
+		},
+	)
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_settings,
+			r = "settings",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 7,
+		},
+	)
+	append(
+		&keys,
+		Piece{l = "Tab", r = "order", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 8},
+	)
 	if screen_owner == 0 && !screen_local_on() {
-		append(&keys, Piece{l = app_cfg.key_layout, r = "layout", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 9})
+		append(
+			&keys,
+			Piece {
+				l = app_cfg.key_layout,
+				r = "layout",
+				lc = C_YELLOW,
+				lb = true,
+				lu = true,
+				rc = C_DIM,
+				pri = 9,
+			},
+		)
 	}
-	append(&keys, Piece{l = app_cfg.key_mirror, r = "mirror", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 10})
-	append(&keys, Piece{l = app_cfg.key_help, r = "help", lc = C_YELLOW, lb = true, lu = true, rc = C_DIM, pri = 0})
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_mirror,
+			r = "mirror",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 10,
+		},
+	)
+	append(
+		&keys,
+		Piece {
+			l = app_cfg.key_help,
+			r = "help",
+			lc = C_YELLOW,
+			lb = true,
+			lu = true,
+			rc = C_DIM,
+			pri = 0,
+		},
+	)
 	row_draw(b, rows, keys[:], cols)
 }
 
@@ -441,7 +584,7 @@ row_draw :: proc(b: ^FB, row: int, pieces: []Piece, cols: int) {
 		x = 1
 	}
 	fb_at(b, row, 1)
-	for i in 0..<cols {
+	for i in 0 ..< cols {
 		fb_str(b, " ")
 	}
 	used := 0
@@ -502,7 +645,7 @@ help_draw :: proc() {
 	b: FB
 	fb_begin(&b)
 	cols, rows := term_size()
-	lines := [17][2]string{
+	lines := [17][2]string {
 		{"", "media"},
 		{app_cfg.key_mic, "toggle microphone mute"},
 		{app_cfg.key_spk, "toggle speaker mute"},

@@ -2,32 +2,7 @@ package toom
 
 import "core:c"
 
-foreign import toomlibs {
-	"h264enc.o",
-	"compat_shim.o",
-	"va_shim.o",
-	"aec_shim.o",
-	"wlshim.o",
-	"screen_shim.o",
-	"proto/screencopy-protocol.o",
-	"aideo/libaideo.a",
-	"aideo/avx2_quant.o",
-	"ffstatic/libavcodec.a",
-	"ffstatic/libavformat.a",
-	"ffstatic/libswscale.a",
-	"ffstatic/libswresample.a",
-	"ffstatic/libavutil.a",
-	"ffstatic/libdav1d.a",
-	"ffstatic/libz.a",
-	"ffstatic/libx264.a",
-	"ffstatic/libopus.a",
-	"ffstatic/libwebrtc_all.a",
-	"ffstatic/libstdc++.a",
-	"ffstatic/libgcc.a",
-	"system:m",
-	"system:pthread",
-	"system:dl",
-}
+foreign import toomlibs {"h264enc.o", "compat_shim.o", "va_shim.o", "aec_shim.o", "wlshim.o", "screen_shim.o", "proto/screencopy-protocol.o", "aideo/libaideo.a", "aideo/avx2_quant.o", "ffstatic/libavcodec.a", "ffstatic/libavformat.a", "ffstatic/libswscale.a", "ffstatic/libswresample.a", "ffstatic/libavutil.a", "ffstatic/libdav1d.a", "ffstatic/libz.a", "ffstatic/libx264.a", "ffstatic/libopus.a", "ffstatic/libwebrtc_all.a", "ffstatic/libstdc++.a", "ffstatic/libgcc.a", "system:m", "system:pthread", "system:dl"}
 
 AVRational :: struct {
 	num, den: c.int,
@@ -99,6 +74,7 @@ foreign toomlibs {
 	aideo_resize :: proc(e: ^AideoEngine, out_w, out_h, origin_row, origin_col: c.int) ---
 	aideo_set_colors :: proc(e: ^AideoEngine, colors: c.int) ---
 	aideo_push_yuv :: proc(e: ^AideoEngine, y, u, v: [^]u8, stride_y, stride_c: c.int) ---
+	aideo_push_rgba :: proc(e: ^AideoEngine, rgba: [^]u8, stride: c.int) ---
 	aideo_repaint :: proc(e: ^AideoEngine) ---
 	aideo_restore :: proc(e: ^AideoEngine) ---
 	aideo_stdout_lock :: proc() ---
@@ -114,4 +90,4 @@ foreign toomlibs {
 }
 
 OPUS_APPLICATION_VOIP :: 2048
-OPUS_SET_BITRATE     :: 4002
+OPUS_SET_BITRATE :: 4002

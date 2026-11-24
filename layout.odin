@@ -1,14 +1,15 @@
 package toom
 
 // Tile is one member block: a picture rect centered inside a cell
-// block with one caption row reserved below the picture.
+// block with one caption row reserved below the picture. The rect is
+// a fixed aspect box so the border never moves when a camera toggles.
 Tile :: struct {
-	row, col:  int,
-	bw, bh:    int,
-	w, h:      int,
+	row, col:   int,
+	bw, bh:     int,
+	w, h:       int,
 	prow, pcol: int,
-	cap:       int,
-	snap:      i8,
+	cap:        int,
+	snap:       i8,
 }
 
 // LayoutMode is the picture arrangement cycled with f.
@@ -35,7 +36,7 @@ fit_pic :: proc(src_w, src_h, max_w, max_h: int) -> (int, int) {
 }
 
 // tile_fit computes the picture rect and the caption row of one block
-// for the given source size.
+// for the given box aspect.
 tile_fit :: proc(t: ^Tile, src_w, src_h: int) {
 	cw, ch := term_cell_pixels()
 	max_w := t.bw * cw
@@ -54,6 +55,15 @@ tile_fit :: proc(t: ^Tile, src_w, src_h: int) {
 	}
 	t.pcol = t.col + max((t.bw - pw) / 2, 0)
 	t.cap = t.prow + ph
+}
+
+// share_box_aspect picks the share box ratio nearest to the content
+// ratio: 16:10 below the midpoint of 16:9 and 16:10, 16:9 above.
+share_box_aspect :: proc(w, h: int) -> (int, int) {
+	if w > 0 && h > 0 && w * 45 < h * 76 {
+		return 16, 10
+	}
+	return 16, 9
 }
 
 // canvas_width is the shared picture area width in columns like the
@@ -75,7 +85,7 @@ canvas_box :: proc(cols, rows: int) -> (int, int, int, int) {
 // layout_grid arranges count members in the grid whose tiles carry
 // the largest pictures. Empty blocks stay empty. The tiles cover the
 // centered canvas above the two footer rows.
-layout_grid :: proc(count, src_w, src_h: int) -> []Tile {
+layout_grid :: proc(count: int) -> []Tile {
 	n := max(count, 1)
 	cols, rows := term_size()
 	crows := rows - 2
@@ -83,14 +93,14 @@ layout_grid :: proc(count, src_w, src_h: int) -> []Tile {
 	off_r, off_c, vw, vh := canvas_box(cols, crows)
 	gap := 1
 	best_gc, best_gr, best_score := 0, 0, -1
-	for gc in 1..=n {
+	for gc in 1 ..= n {
 		gr := (n + gc - 1) / gc
 		bw := (vw - (gc - 1) * gap) / gc
 		bh := vh / gr
 		if bw < 4 || bh < 2 {
 			continue
 		}
-		w, h := fit_pic(src_w, src_h, bw * cw, (bh - 1) * ch)
+		w, h := fit_pic(4, 3, bw * cw, (bh - 1) * ch)
 		score := w * h
 		if score > best_score || (score == best_score && gc * gr < best_gc * best_gr) {
 			best_gc, best_gr, best_score = gc, gr, score
@@ -104,10 +114,15 @@ layout_grid :: proc(count, src_w, src_h: int) -> []Tile {
 	left := 1 + off_c + (vw - (best_gc * bw + (best_gc - 1) * gap)) / 2
 	top := 1 + off_r + (vh - best_gr * bh) / 2
 	tiles := make([]Tile, n)
-	for i in 0..<min(n, best_gc * best_gr) {
+	for i in 0 ..< min(n, best_gc * best_gr) {
 		gy := i / best_gc
 		gx := i % best_gc
-		tiles[i] = Tile{row = top + gy * bh, col = left + gx * (bw + gap), bw = bw, bh = bh}
+		tiles[i] = Tile {
+			row = top + gy * bh,
+			col = left + gx * (bw + gap),
+			bw  = bw,
+			bh  = bh,
+		}
 	}
 	return tiles
 }
@@ -115,8 +130,9 @@ layout_grid :: proc(count, src_w, src_h: int) -> []Tile {
 // layout_focus arranges one big block for the focused member and a
 // thumbnail strip for every other member on the centered canvas. Wide
 // terminals put the strip on the right, tall terminals put it at the
-// bottom.
-layout_focus :: proc(count, focus, big_w, big_h, small_w, small_h: int) -> []Tile {
+// bottom. The big block takes the given box aspect and every
+// thumbnail takes the camera box aspect.
+layout_focus :: proc(count, focus, big_w, big_h: int) -> []Tile {
 	n := max(count, 1)
 	f := min(max(focus, 0), n - 1)
 	cols, rows := term_size()
@@ -129,7 +145,12 @@ layout_focus :: proc(count, focus, big_w, big_h, small_w, small_h: int) -> []Til
 	tiles := make([]Tile, n)
 	strip := n - 1
 	if strip == 0 {
-		tiles[0] = Tile{row = 1 + off_r, col = 1 + off_c, bw = vw, bh = vh}
+		tiles[0] = Tile {
+			row = 1 + off_r,
+			col = 1 + off_c,
+			bw  = vw,
+			bh  = vh,
+		}
 		return tiles
 	}
 	horizontal := vw * cw * 10 >= vh * ch * 11
@@ -137,24 +158,46 @@ layout_focus :: proc(count, focus, big_w, big_h, small_w, small_h: int) -> []Til
 		big_bw := vw * 70 / 100
 		strip_col := 1 + off_c + big_bw + 1
 		strip_bw := vw - big_bw - 1
-		tiles[f] = Tile{row = 1 + off_r, col = 1 + off_c, bw = big_bw, bh = vh}
+		tiles[f] = Tile {
+			row = 1 + off_r,
+			col = 1 + off_c,
+			bw  = big_bw,
+			bh  = vh,
+		}
 		k := 0
-		for i in 0..<n {
+		for i in 0 ..< n {
 			if i == f {
 				continue
 			}
 			if strip == 2 {
 				if k == 0 {
-					tiles[i] = Tile{row = 1 + off_r, col = strip_col, bw = strip_bw, bh = vh / 2 - 1, snap = 1}
+					tiles[i] = Tile {
+						row  = 1 + off_r,
+						col  = strip_col,
+						bw   = strip_bw,
+						bh   = vh / 2 - 1,
+						snap = 1,
+					}
 				} else {
-					tiles[i] = Tile{row = 1 + off_r + vh / 2, col = strip_col, bw = strip_bw, bh = vh - vh / 2, snap = 2}
+					tiles[i] = Tile {
+						row  = 1 + off_r + vh / 2,
+						col  = strip_col,
+						bw   = strip_bw,
+						bh   = vh - vh / 2,
+						snap = 2,
+					}
 				}
 				k += 1
 				continue
 			}
 			top := 1 + off_r + k * vh / strip
 			bot := 1 + off_r + (k + 1) * vh / strip
-			tiles[i] = Tile{row = top, col = strip_col, bw = strip_bw, bh = bot - top}
+			tiles[i] = Tile {
+				row = top,
+				col = strip_col,
+				bw  = strip_bw,
+				bh  = bot - top,
+			}
 			k += 1
 		}
 	} else {
@@ -162,7 +205,7 @@ layout_focus :: proc(count, focus, big_w, big_h, small_w, small_h: int) -> []Til
 		_, ph_big := fit_pic(big_w, big_h, big_px, vh * ch)
 		ph_big_c := (ph_big + ch - 1) / ch
 		small_bw := vw / strip
-		_, ph_small := fit_pic(small_w, small_h, small_bw * cw, vh * ch * 30 / 100)
+		_, ph_small := fit_pic(4, 3, small_bw * cw, vh * ch * 30 / 100)
 		ph_small_c := (ph_small + ch - 1) / ch
 		total := ph_big_c + ph_small_c + 4
 		if total > vh {
@@ -170,16 +213,28 @@ layout_focus :: proc(count, focus, big_w, big_h, small_w, small_h: int) -> []Til
 			total = ph_big_c + ph_small_c + 4
 		}
 		top := 1 + off_r + max((vh - total) / 2, 0)
-		tiles[f] = Tile{row = top, col = 1 + off_c, bw = vw, bh = ph_big_c + 1, snap = 2}
+		tiles[f] = Tile {
+			row  = top,
+			col  = 1 + off_c,
+			bw   = vw,
+			bh   = ph_big_c + 1,
+			snap = 2,
+		}
 		strip_row := top + ph_big_c + 1 + 2
 		k := 0
-		for i in 0..<n {
+		for i in 0 ..< n {
 			if i == f {
 				continue
 			}
 			left := 1 + off_c + k * vw / strip
 			right := 1 + off_c + (k + 1) * vw / strip
-			tiles[i] = Tile{row = strip_row, col = left, bw = right - left, bh = ph_small_c + 1, snap = 2}
+			tiles[i] = Tile {
+				row  = strip_row,
+				col  = left,
+				bw   = right - left,
+				bh   = ph_small_c + 1,
+				snap = 2,
+			}
 			k += 1
 		}
 	}

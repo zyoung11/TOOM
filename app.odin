@@ -5,109 +5,109 @@ import "core:c"
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import "core:thread"
 import "core:sync"
+import "core:thread"
 import "core:time"
 
 app_stop: i32
 
 // force_key_video and force_key_screen request one IDR frame so
 // members who just joined start decoding at once.
-force_key_video:  i32
+force_key_video: i32
 force_key_screen: i32
 
 tx_media_n: u32
 rx_media_n: u32
 
-app_fps:      int
-enc_kbps:     int
-enc_prefer:   int
-cam_dev:      string
-cam_w_req:    int
-cam_h_req:    int
-audio_enc:    OpusEnc
-desk_enc:     OpusEnc
+app_fps: int
+enc_kbps: int
+enc_prefer: int
+cam_dev: string
+cam_w_req: int
+cam_h_req: int
+audio_enc: OpusEnc
+desk_enc: OpusEnc
 
 // PeerRT is the per remote member runtime state.
 PeerRT :: struct {
-	info:    PeerInfo,
-	vdec:    Dec,
-	adec:    OpusDec,
-	desk_dec: OpusDec,
-	desk_rx_aec: Aec,
-	screen_dec: Dec,
-	screen_engine: ^AideoEngine,
-	screen_w:   int,
-	screen_h:   int,
-	screen_tile: Tile,
-	fas:     FragAsm,
-	jb:      RingBuf,
-	jb_mu:   sync.Mutex,
-	desk_ring: RingBuf,
-	desk_mu:   sync.Mutex,
-	engine:  ^AideoEngine,
-	src_w:   int,
-	src_h:   int,
-	tile:    Tile,
-	has_tile: bool,
+	info:          PeerInfo,
+	vdec:          Dec,
+	adec:          OpusDec,
+	desk_dec:      OpusDec,
+	desk_rx_aec:   Aec,
+	screen_dec:    Dec,
+	screen_engine: EngSlot,
+	screen_w:      int,
+	screen_h:      int,
+	screen_tile:   Tile,
+	fas:           FragAsm,
+	jb:            RingBuf,
+	jb_mu:         sync.Mutex,
+	desk_ring:     RingBuf,
+	desk_mu:       sync.Mutex,
+	engine:        EngSlot,
+	src_w:         int,
+	src_h:         int,
+	tile:          Tile,
+	has_tile:      bool,
 }
 
-peer_mu:  sync.Mutex
-peers:    map[u32]^PeerRT
+peer_mu: sync.Mutex
+peers: map[u32]^PeerRT
 
-sess:     Session
-cam:      Camera
-enc:      H264Enc
+sess: Session
+cam: Camera
+enc: H264Enc
 local_dec: Dec
-self_engine: ^AideoEngine
-self_tile:   Tile
-self_w:      int
-self_h:      int
-cam_ready:   i32
+self_engine: EngSlot
+self_tile: Tile
+self_w: int
+self_h: int
+cam_ready: i32
 mic_enabled: bool
-send_video:  i32
-cam_off:     i32
+send_video: i32
+cam_off: i32
 self_mirror: i32 = 1
-ui_modal:    i32
-audio_swap:  i32
-desk_ready:  i32
-desk_send:   i32
-mic_aec:     Aec
-desk_aec:    Aec
-aec_mu:      sync.Mutex
-screen_cap:   ScreenCap
-screen_enc:   H264Enc
-screen_sws:   rawptr
-screen_y:     []u8
-screen_u:     []u8
-screen_v:     []u8
-screen_sw:    int
-screen_sh:    int
+ui_modal: i32
+audio_swap: i32
+desk_ready: i32
+desk_send: i32
+mic_aec: Aec
+desk_aec: Aec
+aec_mu: sync.Mutex
+screen_cap: ScreenCap
+screen_enc: H264Enc
+screen_sws: rawptr
+screen_y: []u8
+screen_u: []u8
+screen_v: []u8
+screen_sw: int
+screen_sh: int
 screen_ready: i32
-screen_send:  i32
+screen_send: i32
 screen_owner: u32
-mode_saved:   LayoutMode
-order_shift:  int
-self_screen_engine: ^AideoEngine
-self_screen_tile:   Tile
-self_screen_w:      int
-self_screen_h:      int
-share_output:       string
-share_cursor:       i32 = 1
-share_win_menu:     i32
-share_window:       u64
-win_lost:           i32
-mir_y:       []u8
-mir_u:       []u8
-mir_v:       []u8
-enc_out:     []u8
-ybuf:        []u8
-ubuf:        []u8
-vbuf:        []u8
+mode_saved: LayoutMode
+order_shift: int
+self_screen_engine: EngSlot
+self_screen_tile: Tile
+self_screen_w: int
+self_screen_h: int
+share_output: string
+share_cursor: i32 = 1
+share_win_menu: i32
+share_window: u64
+win_lost: i32
+mir_y: []u8
+mir_u: []u8
+mir_v: []u8
+enc_out: []u8
+ybuf: []u8
+ubuf: []u8
+vbuf: []u8
 layout_dirty: i32
 layout_heal_pending: bool
-layout_heal_at:     time.Time
-layout_heal_mu:     sync.Mutex
+layout_heal_at: time.Time
+layout_heal_mu: sync.Mutex
 
 // layout_heal_schedule registers one delayed heal pass so a screen
 // wipe and a full repaint happen shortly after any engine lifecycle
@@ -126,7 +126,7 @@ hex_color :: proc(s: string) -> u32 {
 		return 0
 	}
 	v: u32 = 0
-	for i in 1..<7 {
+	for i in 1 ..< 7 {
 		d: u32 = 0
 		ch := s[i]
 		if ch >= '0' && ch <= '9' {
@@ -143,7 +143,16 @@ hex_color :: proc(s: string) -> u32 {
 	return v
 }
 
-engine_new :: proc(src_w, src_h: int, t: Tile) -> ^AideoEngine {
+// EngSlot is one engine slot. The avatar flag says the engine draws
+// the placeholder picture instead of a live source.
+EngSlot :: struct {
+	e:      ^AideoEngine,
+	avatar: bool,
+}
+
+// engine_new opens one engine for the tile rect with the given fit
+// mode and the configured palette and border.
+engine_new :: proc(src_w, src_h: int, t: Tile, fit: int) -> ^AideoEngine {
 	cfg: AideoConfig
 	cfg.fd = 1
 	cfg.src_w = c.int(src_w)
@@ -155,6 +164,7 @@ engine_new :: proc(src_w, src_h: int, t: Tile) -> ^AideoEngine {
 	cfg.origin_col = c.int(t.pcol)
 	cfg.border_px = c.int(max(app_cfg.border_px, 0))
 	cfg.border_color = c.int(hex_color(app_cfg.border_color))
+	cfg.fit = c.int(fit)
 	return aideo_open(&cfg)
 }
 
@@ -162,25 +172,24 @@ engine_new :: proc(src_w, src_h: int, t: Tile) -> ^AideoEngine {
 // and closes never race.
 engine_mu: sync.Mutex
 
-// slot_push pushes one frame into the engine behind a pointer slot
-// under the engine lock. Pushes are silenced while a text page covers
-// the meeting screen.
-slot_push :: proc(slot: ^^AideoEngine, f: YuvFrame) {
+// slot_push pushes one frame into the engine behind one slot under
+// the engine lock. Avatar engines and text pages never take frames.
+slot_push :: proc(slot: ^EngSlot, f: YuvFrame) {
 	sync.mutex_lock(&engine_mu)
-	e := slot^
-	if e != nil && sync.atomic_load(&ui_modal) == 0 {
+	e := slot.e
+	if e != nil && !slot.avatar && sync.atomic_load(&ui_modal) == 0 {
 		aideo_push_yuv(e, f.y, f.u, f.v, f.sy, f.sc)
 	}
 	sync.mutex_unlock(&engine_mu)
 }
 
-// slot_close closes the engine behind a pointer slot under the engine
-// lock.
-slot_close :: proc(slot: ^^AideoEngine) {
+// slot_close closes the engine behind one slot under the engine lock.
+slot_close :: proc(slot: ^EngSlot) {
 	sync.mutex_lock(&engine_mu)
-	if slot^ != nil {
-		aideo_close(slot^)
-		slot^ = nil
+	if slot.e != nil {
+		aideo_close(slot.e)
+		slot.e = nil
+		slot.avatar = false
 		sync.mutex_unlock(&engine_mu)
 		layout_heal_schedule()
 		engines_repaint()
@@ -189,40 +198,97 @@ slot_close :: proc(slot: ^^AideoEngine) {
 	sync.mutex_unlock(&engine_mu)
 }
 
-// slot_set replaces the engine behind a pointer slot under the engine
-// lock.
-slot_set :: proc(slot: ^^AideoEngine, e: ^AideoEngine) {
+// slot_set replaces the engine behind one slot under the engine lock.
+slot_set :: proc(slot: ^EngSlot, e: ^AideoEngine) {
 	sync.mutex_lock(&engine_mu)
-	if slot^ != nil {
-		aideo_close(slot^)
+	if slot.e != nil {
+		aideo_close(slot.e)
 	}
-	slot^ = e
+	slot.e = e
+	slot.avatar = false
 	sync.mutex_unlock(&engine_mu)
 	layout_heal_schedule()
 	engines_repaint()
 }
 
-// slot_resize moves the engine behind a pointer slot to a new tile,
+// slot_resize moves the engine behind one slot to a new tile,
 // creating it when missing and the source size is known. While a text
 // page covers the screen the engine is rebuilt instead of resized
 // because a resize emits its own screen wipe behind the text page.
-slot_resize :: proc(slot: ^^AideoEngine, src_w, src_h: int, t: Tile) {
+slot_resize :: proc(slot: ^EngSlot, src_w, src_h: int, t: Tile, fit: int) {
 	sync.mutex_lock(&engine_mu)
-	if slot^ == nil {
+	if slot.avatar {
+		if slot.e != nil {
+			aideo_close(slot.e)
+		}
+		slot.e = nil
+		slot.avatar = false
+	}
+	if slot.e == nil {
 		if src_w > 0 && src_h > 0 {
-			slot^ = engine_new(src_w, src_h, t)
+			slot.e = engine_new(src_w, src_h, t, fit)
 		}
 	} else if sync.atomic_load(&ui_modal) != 0 {
-		aideo_close(slot^)
-		slot^ = nil
+		aideo_close(slot.e)
+		slot.e = nil
 		if src_w > 0 && src_h > 0 {
-			slot^ = engine_new(src_w, src_h, t)
+			slot.e = engine_new(src_w, src_h, t, fit)
 		}
 	} else {
-		aideo_resize(slot^, c.int(t.w), c.int(t.h), c.int(t.prow), c.int(t.pcol))
+		aideo_resize(slot.e, c.int(t.w), c.int(t.h), c.int(t.prow), c.int(t.pcol))
 	}
 	sync.mutex_unlock(&engine_mu)
 	layout_heal_schedule()
+}
+
+// avatar_push redraws the placeholder picture into one avatar engine.
+// The caller must hold the engine lock.
+avatar_push :: proc(slot: ^EngSlot, t: Tile) {
+	if slot.e == nil || !slot.avatar || t.w < 4 || t.h < 4 {
+		return
+	}
+	rgba := avatar_rgba(t)
+	if sync.atomic_load(&ui_modal) == 0 {
+		aideo_push_rgba(slot.e, &rgba[0], c.int(t.w * 4))
+	}
+	delete(rgba)
+}
+
+// slot_avatar turns one slot into the placeholder picture at the
+// given tile, moving the engine when it already is an avatar.
+slot_avatar :: proc(slot: ^EngSlot, t: Tile) {
+	if t.w < 4 || t.h < 4 {
+		return
+	}
+	sync.mutex_lock(&engine_mu)
+	if slot.e == nil || !slot.avatar {
+		if slot.e != nil {
+			aideo_close(slot.e)
+		}
+		slot.e = engine_new(t.w, t.h, t, FIT_STRETCH)
+		slot.avatar = true
+	} else {
+		aideo_resize(slot.e, c.int(t.w), c.int(t.h), c.int(t.prow), c.int(t.pcol))
+	}
+	avatar_push(slot, t)
+	sync.mutex_unlock(&engine_mu)
+	layout_heal_schedule()
+}
+
+// slot_repaint redraws one engine after a screen wipe: avatar engines
+// repaint their placeholder, video engines repaint their frame.
+slot_repaint :: proc(slot: ^EngSlot, t: Tile, restore: bool) {
+	sync.mutex_lock(&engine_mu)
+	if slot.e != nil {
+		if slot.avatar {
+			avatar_push(slot, t)
+		} else if restore {
+			aideo_restore(slot.e)
+		} else {
+			aideo_repaint(slot.e)
+		}
+	}
+	sync.mutex_unlock(&engine_mu)
 }
 
 // peer_ids_sorted returns the display order: self first, then peers
@@ -234,7 +300,7 @@ peer_ids_sorted :: proc() -> [dynamic]u32 {
 		append(&ids, id)
 	}
 	sync.mutex_unlock(&peer_mu)
-	for i in 0..<len(ids) {
+	for i in 0 ..< len(ids) {
 		for j := i + 1; j < len(ids); j += 1 {
 			if ids[j] < ids[i] {
 				ids[i], ids[j] = ids[j], ids[i]
@@ -256,7 +322,7 @@ display_order :: proc() -> [dynamic]u32 {
 		shift += total
 	}
 	out := make([dynamic]u32, 0, total)
-	for k in 0..<total {
+	for k in 0 ..< total {
 		i := (k + shift) % total
 		if i == 0 {
 			append(&out, sess.self_id)
@@ -297,24 +363,12 @@ peer_count :: proc() -> int {
 // engines_repaint forces every engine to redraw its next frame in
 // full, for example after the screen was cleared.
 engines_repaint :: proc() {
-	sync.mutex_lock(&engine_mu)
-	if self_engine != nil {
-		aideo_repaint(self_engine)
-	}
-	if self_screen_engine != nil {
-		aideo_repaint(self_screen_engine)
-	}
-	sync.mutex_unlock(&engine_mu)
+	slot_repaint(&self_engine, self_tile, false)
+	slot_repaint(&self_screen_engine, self_screen_tile, false)
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
-		sync.mutex_lock(&engine_mu)
-		if p.engine != nil {
-			aideo_repaint(p.engine)
-		}
-		if p.screen_engine != nil {
-			aideo_repaint(p.screen_engine)
-		}
-		sync.mutex_unlock(&engine_mu)
+		slot_repaint(&p.engine, p.tile, false)
+		slot_repaint(&p.screen_engine, p.screen_tile, false)
 	}
 	sync.mutex_unlock(&peer_mu)
 }
@@ -322,24 +376,12 @@ engines_repaint :: proc() {
 // engines_restore redraws every frozen frame at once so the pictures
 // survive a terminal clear without waiting for new frames.
 engines_restore :: proc() {
-	sync.mutex_lock(&engine_mu)
-	if self_engine != nil {
-		aideo_restore(self_engine)
-	}
-	if self_screen_engine != nil {
-		aideo_restore(self_screen_engine)
-	}
-	sync.mutex_unlock(&engine_mu)
+	slot_repaint(&self_engine, self_tile, true)
+	slot_repaint(&self_screen_engine, self_screen_tile, true)
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
-		sync.mutex_lock(&engine_mu)
-		if p.engine != nil {
-			aideo_restore(p.engine)
-		}
-		if p.screen_engine != nil {
-			aideo_restore(p.screen_engine)
-		}
-		sync.mutex_unlock(&engine_mu)
+		slot_repaint(&p.engine, p.tile, true)
+		slot_repaint(&p.screen_engine, p.screen_tile, true)
 	}
 	sync.mutex_unlock(&peer_mu)
 }
@@ -362,20 +404,24 @@ ui_recover :: proc() {
 // colors_apply pushes the selected palette size to every engine.
 colors_apply :: proc() {
 	colors := c.int(colors_now())
-	if self_engine != nil {
-		aideo_set_colors(self_engine, colors)
+	sync.mutex_lock(&engine_mu)
+	if self_engine.e != nil {
+		aideo_set_colors(self_engine.e, colors)
 	}
-	if self_screen_engine != nil {
-		aideo_set_colors(self_screen_engine, colors)
+	if self_screen_engine.e != nil {
+		aideo_set_colors(self_screen_engine.e, colors)
 	}
+	sync.mutex_unlock(&engine_mu)
 	sync.mutex_lock(&peer_mu)
 	for _, p in peers {
-		if p.engine != nil {
-			aideo_set_colors(p.engine, colors)
+		sync.mutex_lock(&engine_mu)
+		if p.engine.e != nil {
+			aideo_set_colors(p.engine.e, colors)
 		}
-		if p.screen_engine != nil {
-			aideo_set_colors(p.screen_engine, colors)
+		if p.screen_engine.e != nil {
+			aideo_set_colors(p.screen_engine.e, colors)
 		}
+		sync.mutex_unlock(&engine_mu)
 	}
 	sync.mutex_unlock(&peer_mu)
 	screen_clear()
@@ -405,53 +451,39 @@ layout_apply :: proc() {
 	share_sw := screen_sw
 	share_sh := screen_sh
 	tiles: []Tile
-	big_w := self_w
-	big_h := self_h
-	if share_owner != 0 {
-		sp := peer_get(share_owner)
-		if sp != nil && sp.screen_w > 0 {
-			big_w, big_h = sp.screen_w, sp.screen_h
-		}
-	} else if share_local {
-		big_w, big_h = share_sw, share_sh
-	} else if order[0] != sess.self_id {
-		p := peer_get(order[0])
-		if p != nil && p.src_w > 0 {
-			big_w, big_h = p.src_w, p.src_h
-		}
-	}
 	if share_owner != 0 || share_local {
-		tiles = layout_focus(n + 1, n, big_w, big_h, self_w, self_h)
+		bw, bh := share_box_aspect(share_sw, share_sh)
+		if share_owner != 0 {
+			sp := peer_get(share_owner)
+			if sp != nil {
+				bw, bh = share_box_aspect(sp.screen_w, sp.screen_h)
+			}
+		}
+		tiles = layout_focus(n + 1, n, bw, bh)
 	} else if conf_mode == .Grid {
-		tiles = layout_grid(n, self_w, self_h)
+		tiles = layout_grid(n)
 	} else {
-		tiles = layout_focus(n, 0, big_w, big_h, self_w, self_h)
+		tiles = layout_focus(n, 0, 4, 3)
 	}
 	if len(tiles) == 0 {
 		sync.atomic_store(&layout_dirty, 0)
 		return
 	}
-	for i in 0..<n {
-		src_w, src_h := self_w, self_h
-		if order[i] != sess.self_id {
-			p := peer_get(order[i])
-			if p != nil && p.src_w > 0 {
-				src_w, src_h = p.src_w, p.src_h
-			}
-		}
-		tile_fit(&tiles[i], src_w, src_h)
+	for i in 0 ..< n {
+		tile_fit(&tiles[i], 4, 3)
 	}
 	if share_owner != 0 {
-		sw2, sh2 := self_w, self_h
+		bw, bh := share_box_aspect(share_sw, share_sh)
 		sp := peer_get(share_owner)
-		if sp != nil && sp.screen_w > 0 {
-			sw2, sh2 = sp.screen_w, sp.screen_h
+		if sp != nil {
+			bw, bh = share_box_aspect(sp.screen_w, sp.screen_h)
 		}
 		if n < len(tiles) {
-			tile_fit(&tiles[n], sw2, sh2)
+			tile_fit(&tiles[n], bw, bh)
 		}
 	} else if share_local && n < len(tiles) {
-		tile_fit(&tiles[n], share_sw, share_sh)
+		bw, bh := share_box_aspect(share_sw, share_sh)
+		tile_fit(&tiles[n], bw, bh)
 		self_screen_tile = tiles[n]
 	}
 	self_idx := 0
@@ -462,7 +494,11 @@ layout_apply :: proc() {
 		}
 	}
 	self_tile = tiles[self_idx]
-	slot_resize(&self_engine, self_w, self_h, self_tile)
+	if sync.atomic_load(&cam_ready) != 0 && sync.atomic_load(&cam_off) == 0 && self_w > 0 {
+		slot_resize(&self_engine, self_w, self_h, self_tile, FIT_COVER)
+	} else {
+		slot_avatar(&self_engine, self_tile)
+	}
 	sync.mutex_lock(&peer_mu)
 	for id, i in order {
 		if id == sess.self_id {
@@ -474,18 +510,22 @@ layout_apply :: proc() {
 		}
 		p.tile = tiles[i]
 		p.has_tile = true
-		slot_resize(&p.engine, p.src_w, p.src_h, p.tile)
+		if p.info.cam {
+			slot_resize(&p.engine, p.src_w, p.src_h, p.tile, FIT_COVER)
+		} else {
+			slot_avatar(&p.engine, p.tile)
+		}
 	}
 	if share_owner != 0 && n < len(tiles) {
 		sp := peers[share_owner]
 		if sp != nil {
 			sp.screen_tile = tiles[n]
-			slot_resize(&sp.screen_engine, sp.screen_w, sp.screen_h, sp.screen_tile)
+			slot_resize(&sp.screen_engine, sp.screen_w, sp.screen_h, sp.screen_tile, FIT_CONTAIN)
 		}
 	}
 	sync.mutex_unlock(&peer_mu)
 	if share_local && n < len(tiles) {
-		slot_resize(&self_screen_engine, share_sw, share_sh, self_screen_tile)
+		slot_resize(&self_screen_engine, share_sw, share_sh, self_screen_tile, FIT_CONTAIN)
 	}
 	if share_owner == 0 && !share_local {
 		slot_close(&self_screen_engine)
@@ -552,20 +592,19 @@ peer_get :: proc(id: u32) -> ^PeerRT {
 }
 
 // video_frame routes one decoded remote frame into the peer engine,
-// refitting the tile when the source size changes.
+// rebuilding the engine when the source size or the engine kind
+// changes.
 video_frame :: proc(p: ^PeerRT, f: YuvFrame) {
 	sync.mutex_lock(&layout_mu)
-	need := p.engine == nil || p.src_w != f.w || p.src_h != f.h
+	need := p.engine.e == nil || p.engine.avatar || p.src_w != f.w || p.src_h != f.h
 	if need {
 		p.src_w = f.w
 		p.src_h = f.h
-		sync.atomic_store(&layout_dirty, 1)
 		if !p.has_tile {
 			sync.mutex_unlock(&layout_mu)
 			return
 		}
-		tile_fit(&p.tile, f.w, f.h)
-		slot_set(&p.engine, engine_new(f.w, f.h, p.tile))
+		slot_set(&p.engine, engine_new(f.w, f.h, p.tile, FIT_COVER))
 	}
 	sync.mutex_unlock(&layout_mu)
 	slot_push(&p.engine, f)
@@ -705,7 +744,12 @@ cam_switch :: proc() {
 		slot_close(&self_engine)
 		layout_apply()
 	}
-	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
+	sess_update(
+		&sess,
+		sync.atomic_load(&send_video) != 0,
+		sync.atomic_load(&mic_mute) == 0,
+		sync.atomic_load(&screen_send) != 0,
+	)
 }
 
 // dev_modal_run opens the device picker during a meeting, keeps the
@@ -769,9 +813,14 @@ capture_thread :: proc() {
 				continue
 			}
 			yuyv_to_i420(data, cam.w, cam.h, ybuf, ubuf, vbuf)
-			f = YuvFrame{
-				y = raw_data(ybuf), u = raw_data(ubuf), v = raw_data(vbuf),
-				sy = c.int(cam.w), sc = c.int(cam.w / 2), w = cam.w, h = cam.h,
+			f = YuvFrame {
+				y  = raw_data(ybuf),
+				u  = raw_data(ubuf),
+				v  = raw_data(vbuf),
+				sy = c.int(cam.w),
+				sc = c.int(cam.w / 2),
+				w  = cam.w,
+				h  = cam.h,
 			}
 		}
 		if f.w > 0 && sync.atomic_load(&cam_off) == 0 {
@@ -791,7 +840,12 @@ capture_thread :: proc() {
 		}
 		if f.w > 0 {
 			if sync.atomic_load(&send_video) != 0 {
-				n, key := h264_enc_encode(&enc, f, enc_out, sync.atomic_load(&force_key_video) != 0)
+				n, key := h264_enc_encode(
+					&enc,
+					f,
+					enc_out,
+					sync.atomic_load(&force_key_video) != 0,
+				)
 				if n > 0 {
 					sync.atomic_store(&force_key_video, 0)
 					flags := u8(0)
@@ -825,7 +879,7 @@ audio_tx_thread :: proc() {
 			continue
 		}
 		peak := 0
-		for i in 0..<AUDIO_BLOCK {
+		for i in 0 ..< AUDIO_BLOCK {
 			v := int(pcm[i])
 			if v < 0 {
 				v = -v
@@ -909,7 +963,12 @@ screen_set_owner :: proc(id: u32) {
 	if id != 0 && id != sess.self_id && sync.atomic_load(&screen_send) != 0 {
 		screen_stop()
 		toast_show("screen sharing stopped, another member took over", 2)
-		sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, false)
+		sess_update(
+			&sess,
+			sync.atomic_load(&send_video) != 0,
+			sync.atomic_load(&mic_mute) == 0,
+			false,
+		)
 	}
 	if id != 0 && screen_owner == 0 {
 		mode_saved = conf_mode
@@ -920,8 +979,6 @@ screen_set_owner :: proc(id: u32) {
 	}
 	sync.atomic_store(&layout_dirty, 1)
 }
-
-
 
 
 // dump_bgra_bmp writes one BGRA frame to a BMP for debugging.
@@ -943,8 +1000,8 @@ dump_bgra_bmp :: proc(path: string, p: []u8, stride, w, h: int) {
 	buf[23] = u8(h >> 8)
 	buf[26] = 1
 	buf[28] = 24
-	for yy in 0..<h {
-		for x in 0..<w {
+	for yy in 0 ..< h {
+		for x in 0 ..< w {
 			off := 54 + (h - 1 - yy) * row + x * 3
 			src := yy * stride + x * 4
 			buf[off] = p[src]
@@ -975,8 +1032,8 @@ dump_frame_bmp :: proc(path: string, y, u, v: [^]u8, sy, sc, w, h: int) {
 	buf[23] = u8(h >> 8)
 	buf[26] = 1
 	buf[28] = 24
-	for yy in 0..<h {
-		for x in 0..<w {
+	for yy in 0 ..< h {
+		for x in 0 ..< w {
 			Y := int(y[yy * sy + x]) - 16
 			U := int(u[(yy / 2) * sc + x / 2]) - 128
 			V := int(v[(yy / 2) * sc + x / 2]) - 128
@@ -998,14 +1055,18 @@ dump_frame_bmp :: proc(path: string, y, u, v: [^]u8, sy, sc, w, h: int) {
 
 // screen_local_on reports whether the local desktop is being shared.
 screen_local_on :: proc() -> bool {
-	return sync.atomic_load(&screen_ready) != 0 && sync.atomic_load(&screen_send) != 0 && screen_sw > 0
+	return(
+		sync.atomic_load(&screen_ready) != 0 &&
+		sync.atomic_load(&screen_send) != 0 &&
+		screen_sw > 0 \
+	)
 }
 
 // screen_preview pushes one captured desktop frame into the local
 // preview engine so the sharer sees what is being shared.
 screen_preview :: proc(f: YuvFrame) {
 	sync.mutex_lock(&layout_mu)
-	need := self_screen_engine == nil || self_screen_w != f.w || self_screen_h != f.h
+	need := self_screen_engine.e == nil || self_screen_w != f.w || self_screen_h != f.h
 	if need {
 		self_screen_w = f.w
 		self_screen_h = f.h
@@ -1014,8 +1075,9 @@ screen_preview :: proc(f: YuvFrame) {
 			sync.mutex_unlock(&layout_mu)
 			return
 		}
-		tile_fit(&self_screen_tile, f.w, f.h)
-		slot_set(&self_screen_engine, engine_new(f.w, f.h, self_screen_tile))
+		bw, bh := share_box_aspect(f.w, f.h)
+		tile_fit(&self_screen_tile, bw, bh)
+		slot_set(&self_screen_engine, engine_new(f.w, f.h, self_screen_tile, FIT_CONTAIN))
 	}
 	sync.mutex_unlock(&layout_mu)
 	slot_push(&self_screen_engine, f)
@@ -1025,7 +1087,7 @@ screen_preview :: proc(f: YuvFrame) {
 // engine, recreating it when the source size changes.
 screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
 	sync.mutex_lock(&layout_mu)
-	need := p.screen_engine == nil || p.screen_w != f.w || p.screen_h != f.h
+	need := p.screen_engine.e == nil || p.screen_w != f.w || p.screen_h != f.h
 	if need {
 		p.screen_w = f.w
 		p.screen_h = f.h
@@ -1034,8 +1096,9 @@ screen_frame_in :: proc(p: ^PeerRT, f: YuvFrame) {
 			sync.mutex_unlock(&layout_mu)
 			return
 		}
-		tile_fit(&p.screen_tile, f.w, f.h)
-		slot_set(&p.screen_engine, engine_new(f.w, f.h, p.screen_tile))
+		bw, bh := share_box_aspect(f.w, f.h)
+		tile_fit(&p.screen_tile, bw, bh)
+		slot_set(&p.screen_engine, engine_new(f.w, f.h, p.screen_tile, FIT_CONTAIN))
 	}
 	sync.mutex_unlock(&layout_mu)
 	slot_push(&p.screen_engine, f)
@@ -1062,7 +1125,12 @@ share_target_apply :: proc(e: ^DevEnt) {
 	if e.dev == "stop" {
 		screen_stop()
 		sync.atomic_store(&layout_dirty, 1)
-		sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, false)
+		sess_update(
+			&sess,
+			sync.atomic_load(&send_video) != 0,
+			sync.atomic_load(&mic_mute) == 0,
+			false,
+		)
 		toast_show("screen sharing stopped", 0)
 		return
 	}
@@ -1090,7 +1158,12 @@ share_target_apply :: proc(e: ^DevEnt) {
 	} else {
 		toast_show("screen sharing failed, compositor needs wlr-screencopy", 2)
 	}
-	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
+	sess_update(
+		&sess,
+		sync.atomic_load(&send_video) != 0,
+		sync.atomic_load(&mic_mute) == 0,
+		sync.atomic_load(&screen_send) != 0,
+	)
 }
 
 // share_menu_run opens the share target menu. Outputs are always
@@ -1128,8 +1201,29 @@ share_menu_run :: proc() {
 			left := (cols - width) / 2 + 1
 			top := max((rows - height) / 2, 1)
 			ui_panel(&b, top, left, width, height, "share target")
-			dev_col_draw(&b, left + 2, top + 2, width - 4, height - 3, opts[:], cur, 0, true, false)
-			hint_draw(&b, cols, rows, [4][2]string{{"ws, jk, ↑↓", "move"}, {"Enter", "select"}, {"q", "cancel"}, {"", ""}})
+			dev_col_draw(
+				&b,
+				left + 2,
+				top + 2,
+				width - 4,
+				height - 3,
+				opts[:],
+				cur,
+				0,
+				true,
+				false,
+			)
+			hint_draw(
+				&b,
+				cols,
+				rows,
+				[4][2]string {
+					{"ws, jk, ↑↓", "move"},
+					{"Enter", "select"},
+					{"q", "cancel"},
+					{"", ""},
+				},
+			)
 			fb_end(&b)
 			need_draw = false
 		}
@@ -1255,7 +1349,18 @@ screen_setup :: proc(w, h: int) {
 	screen_y = make([]u8, w * h)
 	screen_u = make([]u8, w * h / 4)
 	screen_v = make([]u8, w * h / 4)
-	screen_sws = sws_getContext(c.int(w), c.int(h), PIX_FMT_BGRA, c.int(w), c.int(h), PIX_FMT_YUV420P, 1, nil, nil, nil)
+	screen_sws = sws_getContext(
+		c.int(w),
+		c.int(h),
+		PIX_FMT_BGRA,
+		c.int(w),
+		c.int(h),
+		PIX_FMT_YUV420P,
+		1,
+		nil,
+		nil,
+		nil,
+	)
 	_ = h264_enc_open(&screen_enc, w, h, 15, 2000, enc_prefer)
 }
 
@@ -1318,9 +1423,14 @@ screen_tx_once :: proc(out: []u8, last: ^time.Time, first: ^bool, seq: ^u32) -> 
 	dstStride[1] = c.int(w / 2)
 	dstStride[2] = c.int(w / 2)
 	sws_scale(screen_sws, &srcData, &srcStride, 0, c.int(h), &dstData, &dstStride)
-	f := YuvFrame{
-		y = raw_data(screen_y), u = raw_data(screen_u), v = raw_data(screen_v),
-		sy = c.int(w), sc = c.int(w / 2), w = w, h = h,
+	f := YuvFrame {
+		y  = raw_data(screen_y),
+		u  = raw_data(screen_u),
+		v  = raw_data(screen_v),
+		sy = c.int(w),
+		sc = c.int(w / 2),
+		w  = w,
+		h  = h,
 	}
 	screen_preview(f)
 	n, key := h264_enc_encode(&screen_enc, f, out, sync.atomic_load(&force_key_screen) != 0)
@@ -1372,7 +1482,7 @@ mix_thread :: proc() {
 			keep = 0
 			sess_keepalive(&sess)
 		}
-		for i in 0..<len(mix) {
+		for i in 0 ..< len(mix) {
 			mix[i] = 0
 		}
 		list: [dynamic]^PeerRT
@@ -1385,23 +1495,23 @@ mix_thread :: proc() {
 			sync.mutex_lock(&p.jb_mu)
 			n := ring_read(&p.jb, mono[:])
 			sync.mutex_unlock(&p.jb_mu)
-			for i in 0..<n {
+			for i in 0 ..< n {
 				mix[2 * i] += mono[i]
 				mix[2 * i + 1] += mono[i]
 			}
 			sync.mutex_lock(&p.desk_mu)
 			dn := ring_read(&p.desk_ring, tmp[:])
 			sync.mutex_unlock(&p.desk_mu)
-			for i in 0..<dn {
+			for i in 0 ..< dn {
 				mix[i] += tmp[i]
 			}
 		}
 		mn := audio_monitor_pop(mono[:])
-		for i in 0..<mn {
+		for i in 0 ..< mn {
 			mix[2 * i] += mono[i]
 			mix[2 * i + 1] += mono[i]
 		}
-		for i in 0..<len(mix) {
+		for i in 0 ..< len(mix) {
 			if mix[i] > AUDIO_MIX_MAX {
 				mix[i] = AUDIO_MIX_MAX
 			} else if mix[i] < -32768 {
@@ -1409,7 +1519,7 @@ mix_thread :: proc() {
 			}
 		}
 		peak := 0
-		for i in 0..<len(mix) {
+		for i in 0 ..< len(mix) {
 			v := int(mix[i])
 			if v < 0 {
 				v = -v
@@ -1421,7 +1531,7 @@ mix_thread :: proc() {
 		level_store(&rx_level, peak)
 		vol := transmute(f32)u32(sync.atomic_load(&spk_vol_bits))
 		if vol != 1.0 {
-			for i in 0..<len(mix) {
+			for i in 0 ..< len(mix) {
 				s := f32(mix[i]) * vol
 				if s > AUDIO_MIX_MAX {
 					s = AUDIO_MIX_MAX
@@ -1590,7 +1700,12 @@ conf_key :: proc(k: Key) -> bool {
 			} else {
 				toast_show("microphone on", 1)
 			}
-			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
+			sess_update(
+				&sess,
+				sync.atomic_load(&send_video) != 0,
+				sync.atomic_load(&mic_mute) == 0,
+				sync.atomic_load(&screen_send) != 0,
+			)
 		} else if key_is(k, app_cfg.key_cam) {
 			if sync.atomic_load(&cam_ready) != 0 {
 				off := 1 - sync.atomic_load(&cam_off)
@@ -1601,6 +1716,7 @@ conf_key :: proc(k: Key) -> bool {
 					sync.atomic_store(&layout_dirty, 1)
 					toast_show("camera off", 0)
 				} else {
+					sync.atomic_store(&layout_dirty, 1)
 					toast_show("camera on", 1)
 				}
 			} else if cam_pipeline_start() {
@@ -1616,7 +1732,12 @@ conf_key :: proc(k: Key) -> bool {
 				}
 				toast_show(msg, 2)
 			}
-			sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, sync.atomic_load(&screen_send) != 0)
+			sess_update(
+				&sess,
+				sync.atomic_load(&send_video) != 0,
+				sync.atomic_load(&mic_mute) == 0,
+				sync.atomic_load(&screen_send) != 0,
+			)
 		} else if key_is(k, app_cfg.key_layout) {
 			layout_toggle()
 		} else if key_is(k, app_cfg.key_mirror) {
@@ -1666,7 +1787,10 @@ TMUX_FULL_INTERVAL :: 10 * time.Second
 
 // conference_run drives one call from join to hangup. It returns an
 // empty string on a clean exit or the failure reason.
-conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_on: bool) -> string {
+conference_run :: proc(
+	server, room, name, secret: string,
+	create, cam_on, mic_on: bool,
+) -> string {
 	fd := net_open()
 	if fd < 0 {
 		return "Socket create failed"
@@ -1721,7 +1845,7 @@ conference_run :: proc(server, room, name, secret: string, create, cam_on, mic_o
 	sess_update(&sess, sync.atomic_load(&send_video) != 0, sync.atomic_load(&mic_mute) == 0, false)
 
 	screen_clear()
-	self_engine = nil
+	self_engine = EngSlot{}
 	self_tile = Tile{}
 	order_shift = 0
 	if conf_code_tail != "" {
