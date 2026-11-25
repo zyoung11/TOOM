@@ -2,6 +2,7 @@ package toom
 
 import "core:c"
 import "core:fmt"
+import "core:strings"
 import posix "core:sys/posix"
 import "core:time"
 
@@ -9,37 +10,37 @@ CAM_MJPG :: 0x47504A4D
 CAM_YUYV :: 0x56595559
 
 V4L2_BUF_TYPE_VIDEO_CAPTURE :: 1
-V4L2_BUF_TYPE_VIDEO_OUTPUT  :: 3
-V4L2_MEMORY_MMAP            :: 1
-V4L2_CAP_VIDEO_CAPTURE      :: 0x00000001
-V4L2_CAP_VIDEO_OUTPUT       :: 0x00000002
-V4L2_FIELD_NONE             :: 1
+V4L2_BUF_TYPE_VIDEO_OUTPUT :: 3
+V4L2_MEMORY_MMAP :: 1
+V4L2_CAP_VIDEO_CAPTURE :: 0x00000001
+V4L2_CAP_VIDEO_OUTPUT :: 0x00000002
+V4L2_FIELD_NONE :: 1
 
-VIDIOC_QUERYCAP  :: 0x80685600
-VIDIOC_S_FMT     :: 0xc0d05605
-VIDIOC_REQBUFS   :: 0xc0145608
-VIDIOC_QUERYBUF  :: 0xc0585609
-VIDIOC_QBUF      :: 0xc058560f
-VIDIOC_DQBUF     :: 0xc0585611
-VIDIOC_STREAMON  :: 0x40045612
+VIDIOC_QUERYCAP :: 0x80685600
+VIDIOC_S_FMT :: 0xc0d05605
+VIDIOC_REQBUFS :: 0xc0145608
+VIDIOC_QUERYBUF :: 0xc0585609
+VIDIOC_QBUF :: 0xc058560f
+VIDIOC_DQBUF :: 0xc0585611
+VIDIOC_STREAMON :: 0x40045612
 VIDIOC_STREAMOFF :: 0x40045613
 
-O_RDWR      :: 2
-O_NONBLOCK  :: 0x800
-MAP_SHARED  :: 0x01
-PROT_READ   :: 0x1
-PROT_WRITE  :: 0x2
+O_RDWR :: 2
+O_NONBLOCK :: 0x800
+MAP_SHARED :: 0x01
+PROT_READ :: 0x1
+PROT_WRITE :: 0x2
 
 MAP_FAILED :: rawptr(~uintptr(0))
 
 V4l2Capability :: struct {
-	driver:    [16]u8,
-	card:      [32]u8,
-	bus_info:  [32]u8,
-	version:   u32,
-	caps:      u32,
+	driver:      [16]u8,
+	card:        [32]u8,
+	bus_info:    [32]u8,
+	version:     u32,
+	caps:        u32,
 	device_caps: u32,
-	reserved:  [3]u32,
+	reserved:    [3]u32,
 }
 
 V4l2PixFormat :: struct {
@@ -56,9 +57,9 @@ V4l2PixFormat :: struct {
 }
 
 V4l2Format :: struct {
-	typ: u32,
-	pad: u32,
-	pix: V4l2PixFormat,
+	typ:  u32,
+	pad:  u32,
+	pix:  V4l2PixFormat,
 	rest: [160]u8,
 }
 
@@ -92,29 +93,35 @@ V4l2Buffer :: struct {
 	tail:      [12]u8,
 }
 
+// CamGrab is the outcome of one frame grab. Lost means the device
+// disappeared or wedged and the pipeline must restart.
+CamGrab :: enum {
+	None,
+	Frame,
+	Lost,
+}
+
+EIO :: 5
+ENXIO :: 6
+ENODEV :: 19
+
 // cam_open_dev opens a V4L2 device non blocking.
 cam_open_dev :: proc(path: cstring) -> c.int {
 	return c.int(posix.open(path, {.RDWR, .NONBLOCK}))
 }
 
-// cam_poll_fd waits until the device is readable.
-cam_poll_fd :: proc(fd: c.int, timeout_ms: c.int) -> bool {
-	pfd := posix.pollfd{fd = posix.FD(fd), events = {.IN}}
-	return posix.poll(&pfd, 1, timeout_ms) > 0
-}
-
 foreign camlib {
-	@(link_name="ioctl")
+	@(link_name = "ioctl")
 	cam_ioctl :: proc(fd: c.int, req: u64, arg: rawptr) -> c.int ---
-	@(link_name="mmap")
+	@(link_name = "mmap")
 	cam_mmap :: proc(addr: rawptr, len: u64, prot, flags, fd: c.int, off: u64) -> rawptr ---
-	@(link_name="munmap")
+	@(link_name = "munmap")
 	cam_munmap :: proc(addr: rawptr, len: u64) -> c.int ---
-	@(link_name="close")
+	@(link_name = "close")
 	cam_close :: proc(fd: c.int) -> c.int ---
-	@(link_name="flock")
+	@(link_name = "flock")
 	cam_flock :: proc(fd: c.int, op: c.int) -> c.int ---
-	@(link_name="__errno_location")
+	@(link_name = "__errno_location")
 	cam_errno_loc :: proc() -> ^c.int ---
 }
 
@@ -124,6 +131,10 @@ CAM_LOCK_UN :: 8
 
 cam_lock_fd: c.int = -1
 cam_fail: string
+
+// cam_bus is the USB bus id of the running camera, used to find the
+// device again after it reconnects on another node.
+cam_bus: string
 
 // cam_lock takes the per device lock file so one camera is never
 // opened by two toom instances at once. The kernel blocks the losing
@@ -142,7 +153,11 @@ cam_lock :: proc(dev: string) -> bool {
 	}
 	buf: [256]u8
 	path := fmt.tprintf("/tmp/toom-%s.lock", name)
-	fd := posix.open(to_cstr(path, buf[:]), {.RDWR, .NONBLOCK, .CREAT}, posix.mode_t{.IRUSR, .IWUSR, .IRGRP, .IROTH})
+	fd := posix.open(
+		to_cstr(path, buf[:]),
+		{.RDWR, .NONBLOCK, .CREAT},
+		posix.mode_t{.IRUSR, .IWUSR, .IRGRP, .IROTH},
+	)
 	if fd < 0 {
 		cam_fail = "camera: lock file failed"
 		return false
@@ -166,20 +181,18 @@ cam_unlock :: proc() {
 	}
 }
 
-foreign import camlib {
-	"system:libc.so.6",
-}
+foreign import camlib "system:libc.so.6"
 
 // Camera owns one V4L2 streaming capture device.
 Camera :: struct {
-	fd:     c.int,
-	fmt:    u32,
-	w:      int,
-	h:      int,
-	nbufs:  int,
-	mems:   [4]rawptr,
-	lens:   [4]u64,
-	cur:    int,
+	fd:      c.int,
+	fmt:     u32,
+	w:       int,
+	h:       int,
+	nbufs:   int,
+	mems:    [4]rawptr,
+	lens:    [4]u64,
+	cur:     int,
 	grabbed: bool,
 }
 
@@ -188,7 +201,7 @@ Camera :: struct {
 // after a few attempts on a persistent error.
 cam_xioctl :: proc(fd: c.int, req: u64, arg: rawptr) -> c.int {
 	r: c.int = -1
-	for _ in 0..<4 {
+	for _ in 0 ..< 4 {
 		r = cam_ioctl(fd, req, arg)
 		if r == 0 {
 			return 0
@@ -216,15 +229,22 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 	cam.fd = fd
 
 	cap: V4l2Capability
-	if cam_xioctl(fd, VIDIOC_QUERYCAP, &cap) != 0 || (cap.device_caps & V4L2_CAP_VIDEO_CAPTURE) == 0 {
+	if cam_xioctl(fd, VIDIOC_QUERYCAP, &cap) != 0 ||
+	   (cap.device_caps & V4L2_CAP_VIDEO_CAPTURE) == 0 {
 		cam_fail = "camera: not a capture device"
 		cam_stop(cam)
 		return false
 	}
+	if cam_bus != "" {
+		delete(cam_bus)
+	}
+	cam_bus = cstr_dup(&cap.bus_info[0])
 
 	picked := false
 	for fourcc in ([2]u32{CAM_MJPG, CAM_YUYV}) {
-		f := V4l2Format{typ = V4L2_BUF_TYPE_VIDEO_CAPTURE}
+		f := V4l2Format {
+			typ = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+		}
 		f.pix.width = u32(want_w)
 		f.pix.height = u32(want_h)
 		f.pix.pixelformat = fourcc
@@ -242,15 +262,22 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 		return false
 	}
 
-	req := V4l2Requestbuffers{count = 4, typ = V4L2_BUF_TYPE_VIDEO_CAPTURE, memory = V4L2_MEMORY_MMAP}
+	req := V4l2Requestbuffers {
+		count  = 4,
+		typ    = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+		memory = V4L2_MEMORY_MMAP,
+	}
 	if cam_xioctl(fd, VIDIOC_REQBUFS, &req) != 0 || req.count < 2 {
 		cam_fail = tprintf("camera: buffer request errno=%d", cam_errno_loc()^)
 		cam_stop(cam)
 		return false
 	}
 	cam.nbufs = int(req.count)
-	for i in 0..<cam.nbufs {
-		b := V4l2Buffer{typ = V4L2_BUF_TYPE_VIDEO_CAPTURE, memory = V4L2_MEMORY_MMAP}
+	for i in 0 ..< cam.nbufs {
+		b := V4l2Buffer {
+			typ    = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+			memory = V4L2_MEMORY_MMAP,
+		}
 		b.index = u32(i)
 		if cam_xioctl(fd, VIDIOC_QUERYBUF, &b) != 0 {
 			cam_stop(cam)
@@ -283,31 +310,85 @@ cam_start :: proc(cam: ^Camera, dev: string, want_w, want_h: int) -> bool {
 	return true
 }
 
-// cam_grab waits for one frame and returns its bytes.
-cam_grab :: proc(cam: ^Camera, timeout_ms: int) -> ([]u8, bool) {
+// cam_probe reports whether the device opens right now.
+cam_probe :: proc(path: string) -> bool {
+	buf: [256]u8
+	n := min(len(path), len(buf) - 1)
+	copy(buf[:], path[:n])
+	buf[n] = 0
+	fd := cam_open_dev(cast(cstring)&buf[0])
+	if fd < 0 {
+		return false
+	}
+	cam_close(fd)
+	return true
+}
+
+// cam_find_bus returns the device node that currently carries the
+// given USB bus id. The caller owns the result.
+cam_find_bus :: proc(bus: string) -> string {
+	if bus == "" {
+		return ""
+	}
+	cams := cam_enum_devs()
+	defer dev_list_free(&cams)
+	for e in cams {
+		if e.bus == bus {
+			return strings.clone(e.dev)
+		}
+	}
+	return ""
+}
+
+// cam_grab waits for one frame and returns its bytes. Lost reports a
+// gone device so the caller can restart the pipeline.
+cam_grab :: proc(cam: ^Camera, timeout_ms: int) -> ([]u8, CamGrab) {
 	if cam.grabbed {
-		return nil, false
+		return nil, .None
 	}
-	if !cam_poll_fd(cam.fd, c.int(timeout_ms)) {
-		return nil, false
+	pfd := posix.pollfd {
+		fd     = posix.FD(cam.fd),
+		events = {.IN},
 	}
-	b := V4l2Buffer{typ = V4L2_BUF_TYPE_VIDEO_CAPTURE, memory = V4L2_MEMORY_MMAP}
+	n := posix.poll(&pfd, 1, c.int(timeout_ms))
+	if n == 0 {
+		return nil, .None
+	}
+	if n < 0 {
+		return nil, .None
+	}
+	if pfd.revents & {.ERR, .HUP, .NVAL} != {} {
+		return nil, .Lost
+	}
+	b := V4l2Buffer {
+		typ    = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+		memory = V4L2_MEMORY_MMAP,
+	}
 	if cam_ioctl(cam.fd, VIDIOC_DQBUF, &b) != 0 {
-		return nil, false
+		ene := cam_errno_loc()^
+		if ene == EIO || ene == ENXIO || ene == ENODEV {
+			return nil, .Lost
+		}
+		return nil, .None
 	}
 	cam.cur = int(b.index)
 	cam.grabbed = true
 	ptr := ([^]u8)(cam.mems[cam.cur])
-	return ptr[:int(b.bytesused)], true
+	return ptr[:int(b.bytesused)], .Frame
 }
 
 cam_ungrab :: proc(cam: ^Camera) {
 	if !cam.grabbed {
 		return
 	}
-	b := V4l2Buffer{typ = V4L2_BUF_TYPE_VIDEO_CAPTURE, memory = V4L2_MEMORY_MMAP}
+	b := V4l2Buffer {
+		typ    = V4L2_BUF_TYPE_VIDEO_CAPTURE,
+		memory = V4L2_MEMORY_MMAP,
+	}
 	b.index = u32(cam.cur)
-	cam_ioctl(cam.fd, VIDIOC_QBUF, &b)
+	if cam_ioctl(cam.fd, VIDIOC_QBUF, &b) != 0 {
+		dbg_log("qbuf errno=%d", cam_errno_loc()^)
+	}
 	cam.grabbed = false
 }
 
@@ -316,7 +397,7 @@ cam_stop :: proc(cam: ^Camera) {
 	if cam.fd > 0 {
 		typ := c.int(V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		cam_ioctl(cam.fd, VIDIOC_STREAMOFF, &typ)
-		for i in 0..<cam.nbufs {
+		for i in 0 ..< cam.nbufs {
 			if cam.mems[i] != nil {
 				cam_munmap(cam.mems[i], cam.lens[i])
 				cam.mems[i] = nil

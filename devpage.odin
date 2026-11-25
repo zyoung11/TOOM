@@ -1,12 +1,12 @@
 package toom
 
+import ma "aideo/miniaudio"
 import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:strings"
 import "core:sync"
 import "core:unicode/utf8"
-import ma "aideo/miniaudio"
 
 // DEV_FOLDERS is the number of settings groups.
 DEV_FOLDERS :: 5
@@ -32,7 +32,7 @@ DevKind :: enum u8 {
 
 // dev_row_kinds_session lists the settings rows of every group during
 // a meeting in display order.
-dev_row_kinds_session := [5][]DevKind{
+dev_row_kinds_session := [5][]DevKind {
 	{.Cam, .CamDev},
 	{.Mic, .Spk, .DeskShare, .Volume, .AudioIn, .AudioOut},
 	{.Mirror, .Colors, .Layout},
@@ -43,7 +43,7 @@ dev_row_kinds_session := [5][]DevKind{
 // dev_row_kinds_menu lists the settings rows before a meeting. The
 // session switches show their join defaults here and system audio is
 // left out because it has no useful default.
-dev_row_kinds_menu := [5][]DevKind{
+dev_row_kinds_menu := [5][]DevKind {
 	{.Cam, .CamDev},
 	{.Mic, .Spk, .Volume, .AudioIn, .AudioOut},
 	{.Mirror, .Colors, .Layout},
@@ -79,6 +79,7 @@ dev_folder_name :: proc(folder: int) -> string {
 DevEnt :: struct {
 	name:       string,
 	dev:        string,
+	bus:        string,
 	win:        u64,
 	id:         ma.device_id,
 	is_default: bool,
@@ -114,12 +115,12 @@ DevEdit :: struct {
 // control live session state instead of the join defaults.
 dev_session: bool
 
-dev_dir:        int
-dev_row:        [5]int
-dev_pick:       [2]DevPick
-dev_col:        DevCol
-dev_edit:       DevEdit
-dev_cam_name:   string
+dev_dir: int
+dev_row: [5]int
+dev_pick: [2]DevPick
+dev_col: DevCol
+dev_edit: DevEdit
+dev_cam_name: string
 dev_target_name: string
 
 // dev_prev caches the preview column of the picker row under the
@@ -161,7 +162,7 @@ id_is_monitor :: proc(id: ^ma.device_id) -> bool {
 	if n < len(suffix) {
 		return false
 	}
-	for i in 0..<len(suffix) {
+	for i in 0 ..< len(suffix) {
 		if s[n - len(suffix) + i] != c.char(suffix[i]) {
 			return false
 		}
@@ -193,7 +194,7 @@ audio_enum_devs :: proc(capture: bool) -> [dynamic]DevEnt {
 		list = cdevs
 		n = int(ccount)
 	}
-	for i in 0..<n {
+	for i in 0 ..< n {
 		d := list[i]
 		if capture && id_is_monitor(&d.id) {
 			continue
@@ -219,7 +220,7 @@ audio_enum_mon :: proc() -> [dynamic]DevEnt {
 	if ma.context_get_devices(&ctx, &pdevs, &pcount, &cdevs, &ccount) != .SUCCESS {
 		return out
 	}
-	for i in 0..<int(ccount) {
+	for i in 0 ..< int(ccount) {
 		d := cdevs[i]
 		if id_is_monitor(&d.id) {
 			append(&out, DevEnt{name = cstr_dup(&d.name[0]), id = d.id})
@@ -233,14 +234,7 @@ audio_enum_mon :: proc() -> [dynamic]DevEnt {
 // capture node per bus address is listed.
 cam_enum_devs :: proc() -> [dynamic]DevEnt {
 	out := make([dynamic]DevEnt, 0, 4)
-	seen: [dynamic]string
-	defer {
-		for s in seen {
-			delete(s)
-		}
-		delete(seen)
-	}
-	for i in 0..<32 {
+	for i in 0 ..< 32 {
 		path := fmt.tprintf("/dev/video%d", i)
 		buf: [256]u8
 		n := min(len(path), 255)
@@ -251,11 +245,12 @@ cam_enum_devs :: proc() -> [dynamic]DevEnt {
 			continue
 		}
 		cap: V4l2Capability
-		if cam_ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0 && (cap.device_caps & V4L2_CAP_VIDEO_CAPTURE) != 0 {
+		if cam_ioctl(fd, VIDIOC_QUERYCAP, &cap) == 0 &&
+		   (cap.device_caps & V4L2_CAP_VIDEO_CAPTURE) != 0 {
 			bus := cstr_dup(&cap.bus_info[0])
 			dup := false
-			for s in seen {
-				if s == bus {
+			for e in out {
+				if e.bus == bus {
 					dup = true
 					break
 				}
@@ -263,8 +258,10 @@ cam_enum_devs :: proc() -> [dynamic]DevEnt {
 			if dup {
 				delete(bus)
 			} else {
-				append(&seen, bus)
-				append(&out, DevEnt{name = cstr_dup(&cap.card[0]), dev = strings.clone(path)})
+				append(
+					&out,
+					DevEnt{name = cstr_dup(&cap.card[0]), dev = strings.clone(path), bus = bus},
+				)
 			}
 		}
 		cam_close(fd)
@@ -280,12 +277,37 @@ cam_auto: bool
 
 // cam_set installs the active camera path with owned storage.
 cam_set :: proc(path: string) {
+	if cam_dev_owned && path == cam_dev {
+		return
+	}
 	if cam_dev_owned {
 		delete(cam_dev)
 	}
 	cam_dev = strings.clone(path)
 	cam_dev_owned = true
 	dev_prev_have = false
+}
+
+// cam_primary remembers the preferred camera with owned storage so a
+// stand-in steps back when the preferred device returns. It never
+// reaches the config file.
+cam_primary: string
+cam_primary_bus: string
+cam_primary_name: string
+cam_primary_owned: bool
+
+// cam_primary_set stores the preferred camera path, its USB bus id
+// and its name.
+cam_primary_set :: proc(path, bus, name: string) {
+	if cam_primary_owned {
+		delete(cam_primary)
+		delete(cam_primary_bus)
+		delete(cam_primary_name)
+	}
+	cam_primary = strings.clone(path)
+	cam_primary_bus = strings.clone(bus)
+	cam_primary_name = strings.clone(name)
+	cam_primary_owned = true
 }
 
 // cam_auto_pick follows the auto mode to the first available camera
@@ -362,6 +384,9 @@ dev_list_free :: proc(l: ^[dynamic]DevEnt) {
 		if len(e.dev) > 0 {
 			delete(e.dev)
 		}
+		if len(e.bus) > 0 {
+			delete(e.bus)
+		}
 	}
 	delete(l^)
 	l^ = nil
@@ -388,7 +413,9 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 	case .AudioIn:
 		src := audio_enum_devs(true)
 		for &e in src {
-			e.picked = (e.is_default && dev_pick[0].use == "") || (!e.is_default && id_str(&e.id) == dev_pick[0].use)
+			e.picked =
+				(e.is_default && dev_pick[0].use == "") ||
+				(!e.is_default && id_str(&e.id) == dev_pick[0].use)
 			if e.picked {
 				picked = len(opts^)
 			}
@@ -398,7 +425,9 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 	case .AudioOut:
 		src := audio_enum_devs(false)
 		for &e in src {
-			e.picked = (e.is_default && dev_pick[1].use == "") || (!e.is_default && id_str(&e.id) == dev_pick[1].use)
+			e.picked =
+				(e.is_default && dev_pick[1].use == "") ||
+				(!e.is_default && id_str(&e.id) == dev_pick[1].use)
 			if e.picked {
 				picked = len(opts^)
 			}
@@ -406,7 +435,14 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 		}
 		delete(src)
 	case .CamDev:
-		append(opts, DevEnt{name = strings.clone(tr("Auto", "自动")), is_default = true, picked = cam_auto})
+		append(
+			opts,
+			DevEnt {
+				name = strings.clone(tr("Auto", "自动")),
+				is_default = true,
+				picked = cam_auto,
+			},
+		)
 		if cam_auto {
 			picked = 0
 		}
@@ -421,7 +457,10 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 		delete(src)
 	case .Colors:
 		for lv, i in CONF_COLORS {
-			append(opts, DevEnt{name = strings.clone(tprintf("%d colors", lv)), picked = i == color_idx})
+			append(
+				opts,
+				DevEnt{name = strings.clone(tprintf("%d colors", lv)), picked = i == color_idx},
+			)
 			if i == color_idx {
 				picked = len(opts^) - 1
 			}
@@ -430,11 +469,14 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 		active := sync.atomic_load(&screen_send) != 0
 		outs := screen_outputs()
 		for o in outs {
-			append(opts, DevEnt{
-				name = strings.clone(tprintf("output: %s", o)),
-				dev = strings.clone(o),
-				picked = active && share_window == 0 && share_output == o,
-			})
+			append(
+				opts,
+				DevEnt {
+					name = strings.clone(tprintf("output: %s", o)),
+					dev = strings.clone(o),
+					picked = active && share_window == 0 && share_output == o,
+				},
+			)
 			if opts[len(opts^) - 1].picked {
 				picked = len(opts^) - 1
 			}
@@ -447,11 +489,14 @@ dev_sub_build :: proc(kind: DevKind, opts: ^[dynamic]DevEnt) -> int {
 				if label == "" {
 					label = w.app
 				}
-				append(opts, DevEnt{
-					name = strings.clone(tprintf("window: %s", label)),
-					win = w.id,
-					picked = active && share_window != 0 && share_window == w.id,
-				})
+				append(
+					opts,
+					DevEnt {
+						name = strings.clone(tprintf("window: %s", label)),
+						win = w.id,
+						picked = active && share_window != 0 && share_window == w.id,
+					},
+				)
 				if opts[len(opts^) - 1].picked {
 					picked = len(opts^) - 1
 				}
@@ -532,7 +577,7 @@ dev_col_apply :: proc() {
 		colors_apply()
 		toast_show(tprintf("colors %d", colors_now()), 0)
 	}
-	for i in 0..<len(dev_col.opts) {
+	for i in 0 ..< len(dev_col.opts) {
 		dev_col.opts[i].picked = i == dev_col.cur
 	}
 	dev_prev_have = false
@@ -827,7 +872,7 @@ cut_dot :: proc(s: string, width: int, buf: []u8) -> string {
 			break
 		}
 		b, k := utf8.encode_rune(r)
-		for i in 0..<k {
+		for i in 0 ..< k {
 			buf[n] = b[i]
 			n += 1
 		}
@@ -1030,7 +1075,7 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 	kinds := dev_rows(folder)
 
 	need0 := 0
-	for i in 0..<DEV_FOLDERS {
+	for i in 0 ..< DEV_FOLDERS {
 		name := dev_folder_name(i)
 		need0 = max(need0, disp_width("▸ ") + disp_width(name) + 1)
 	}
@@ -1062,7 +1107,7 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 	x2 := x1 + w1 + 1
 	avail2 := max(cols - x2, 8)
 
-	for idx in 0..<DEV_FOLDERS {
+	for idx in 0 ..< DEV_FOLDERS {
 		y := idx + 3
 		line := cut_dot(tprintf("▸ %s", dev_folder_name(idx)), w0 - 1, nbuf[:])
 		dev_cell(b, x0, y, w0, line, idx == folder && dev_dir == 0, false, dev_dir > 0, 0)
@@ -1073,11 +1118,34 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 		label := dev_row_label(kind)
 		value, vcol := dev_row_value(kind)
 		cursor := i == dev_row[folder] && dev_dir == 1
-		dev_row_draw(b, x1, y, w1, label_w, label, value, vcol, cursor, dev_dir != 1, dev_row_folder(kind))
+		dev_row_draw(
+			b,
+			x1,
+			y,
+			w1,
+			label_w,
+			label,
+			value,
+			vcol,
+			cursor,
+			dev_dir != 1,
+			dev_row_folder(kind),
+		)
 	}
 
 	if dev_col.open {
-		dev_col_draw(b, x2, 3, avail2, rows - 4, dev_col.opts[:], dev_col.cur, dev_col.off, dev_dir == 2, false)
+		dev_col_draw(
+			b,
+			x2,
+			3,
+			avail2,
+			rows - 4,
+			dev_col.opts[:],
+			dev_col.cur,
+			dev_col.off,
+			dev_dir == 2,
+			false,
+		)
 		return
 	}
 	if dev_dir == 0 {
@@ -1099,13 +1167,19 @@ dev_draw :: proc(b: ^FB, cols, rows: int) {
 
 // dev_col_draw paints one option column. A negative cursor draws the
 // dimmed preview variant without a focus bar.
-dev_col_draw :: proc(b: ^FB, x, y, width, list_h: int, opts: []DevEnt, cursor, offset: int, focused, dim: bool) {
+dev_col_draw :: proc(
+	b: ^FB,
+	x, y, width, list_h: int,
+	opts: []DevEnt,
+	cursor, offset: int,
+	focused, dim: bool,
+) {
 	nbuf: [512]u8
 	off := offset
 	if cursor >= 0 {
 		off = scroll_offset(offset, cursor, list_h)
 	}
-	for row in 0..<list_h {
+	for row in 0 ..< list_h {
 		idx := off + row
 		if idx >= len(opts) {
 			break
@@ -1130,7 +1204,13 @@ dev_col_draw :: proc(b: ^FB, x, y, width, list_h: int, opts: []DevEnt, cursor, o
 // the values start at one shared tab stop like the form pages. The
 // cursor paints one bar that ends two columns past the content like
 // the BM cursor padding.
-dev_row_draw :: proc(b: ^FB, x, y, width, label_w: int, label, value: string, vcol: int, cursor, dim, folder_row: bool) {
+dev_row_draw :: proc(
+	b: ^FB,
+	x, y, width, label_w: int,
+	label, value: string,
+	vcol: int,
+	cursor, dim, folder_row: bool,
+) {
 	nbuf: [512]u8
 	vbuf: [512]u8
 	mark := "  "
@@ -1164,7 +1244,7 @@ dev_row_draw :: proc(b: ^FB, x, y, width, label_w: int, label, value: string, vc
 	fb_str(b, mark)
 	fb_str(b, label)
 	if value_cut != "" {
-		for _ in 0..<(value_x - disp_width(mark) - disp_width(label)) {
+		for _ in 0 ..< (value_x - disp_width(mark) - disp_width(label)) {
 			fb_str(b, " ")
 		}
 		if !cursor {
@@ -1175,11 +1255,11 @@ dev_row_draw :: proc(b: ^FB, x, y, width, label_w: int, label, value: string, vc
 	if ink {
 		fb_bg(b, vcol)
 	}
-	for _ in 0..<max(bar - content, 0) {
+	for _ in 0 ..< max(bar - content, 0) {
 		fb_str(b, " ")
 	}
 	fb_reset(b)
-	for _ in 0..<max(width - bar, 0) {
+	for _ in 0 ..< max(width - bar, 0) {
 		fb_str(b, " ")
 	}
 }
@@ -1226,11 +1306,11 @@ dev_cell :: proc(b: ^FB, x, y, width: int, line: string, cursor, chosen, dim: bo
 		fb_str(b, "\x1b[2m")
 	}
 	fb_str(b, shown)
-	for i in disp_width(shown)..<bar {
+	for i in disp_width(shown) ..< bar {
 		fb_str(b, " ")
 	}
 	fb_reset(b)
-	for _ in bar..<width {
+	for _ in bar ..< width {
 		fb_str(b, " ")
 	}
 }
@@ -1287,14 +1367,14 @@ dev_hint :: proc(b: ^FB, cols, rows: int) {
 	}
 	items: [4][2]string
 	if dev_edit.open {
-		items = [4][2]string{
+		items = [4][2]string {
 			{"0-9", tr("type value", "输入数值")},
 			{"Enter", tr("confirm", "确认")},
 			{"Esc", tr("cancel", "取消")},
 			{"", ""},
 		}
 	} else {
-		items = [4][2]string{
+		items = [4][2]string {
 			{"wasd, hjkl, ↑↓←→", tr("move", "移动")},
 			{"Enter/Space", tr("open or toggle", "打开或切换")},
 			{"q", tr("back", "返回")},

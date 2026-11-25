@@ -64,6 +64,12 @@ self_tile: Tile
 self_w: int
 self_h: int
 cam_ready: i32
+cam_frame_seq: u32
+cam_dead: i32
+cam_fallback: bool
+cam_retry_at: time.Time
+cam_watch_seq: u32
+cam_watch_at: time.Time
 mic_enabled: bool
 send_video: i32
 cam_off: i32
@@ -623,6 +629,7 @@ cam_pipeline_build :: proc() -> bool {
 		return false
 	}
 	sync.atomic_store(&cam_ready, 1)
+	cam_watch_at = time.now()
 	return true
 }
 
@@ -635,7 +642,13 @@ cam_pipeline_start :: proc() -> bool {
 	}
 	cam_auto_pick()
 	if cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
-		return cam_pipeline_build()
+		if cam_pipeline_build() {
+			if cam_auto {
+				cam_primary_set(cam_dev, cam_bus, dev_cam_name)
+			}
+			return true
+		}
+		return false
 	}
 	cams := cam_enum_devs()
 	defer dev_list_free(&cams)
@@ -646,7 +659,13 @@ cam_pipeline_start :: proc() -> bool {
 		cam_set(e.dev)
 		dev_set_name(&dev_cam_name, e.name)
 		if cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
-			return cam_pipeline_build()
+			if cam_pipeline_build() {
+				if cam_auto {
+					cam_primary_set(cam_dev, cam_bus, dev_cam_name)
+				}
+				return true
+			}
+			return false
 		}
 	}
 	return false
@@ -673,12 +692,16 @@ audio_switch :: proc() {
 
 // cam_switch restarts the camera pipeline so the newly picked device
 // takes effect during a meeting.
-cam_switch :: proc() {
-	off := sync.atomic_load(&cam_off)
-	was_ready := sync.atomic_load(&cam_ready) != 0
+// cam_pipeline_teardown stops the camera and frees the pipeline so a
+// restart starts clean. It waits for the capture thread to leave grab
+// before touching a live device.
+cam_pipeline_teardown :: proc() {
+	live := cam.fd > 0
 	sync.atomic_store(&cam_ready, 0)
 	sync.atomic_store(&send_video, 0)
-	time.sleep(300 * time.Millisecond)
+	if live {
+		time.sleep(300 * time.Millisecond)
+	}
 	cam_stop(&cam)
 	h264_enc_close(&enc)
 	dec_close(&local_dec)
@@ -696,6 +719,140 @@ cam_switch :: proc() {
 	mir_y = nil
 	mir_u = nil
 	mir_v = nil
+}
+
+// cam_pipeline_try starts the pipeline on one device and reports
+// success.
+cam_pipeline_try :: proc(dev: string) -> bool {
+	cam_set(dev)
+	if !cam_start(&cam, dev, cam_w_req, cam_h_req) {
+		dbg_log("try %s start-fail %s", dev, cam_fail)
+		return false
+	}
+	ok := cam_pipeline_build()
+	dbg_log("try %s build=%v self=%dx%d", dev, ok, self_w, self_h)
+	return ok
+}
+
+// cam_pipeline_try_any starts the pipeline on the first camera that
+// opens.
+cam_pipeline_try_any :: proc() -> bool {
+	cams := cam_enum_devs()
+	defer dev_list_free(&cams)
+	for e in cams {
+		cam_set(e.dev)
+		dev_set_name(&dev_cam_name, e.name)
+		if cam_start(&cam, cam_dev, cam_w_req, cam_h_req) {
+			return cam_pipeline_build()
+		}
+	}
+	return false
+}
+
+// cam_watchdog is the silence after which a live camera counts as
+// lost. It never drops below three frame periods so a low frame rate
+// configuration never trips it.
+cam_watchdog :: proc() -> time.Duration {
+	periods := 3 * time.Second / time.Duration(max(app_fps, 1))
+	return max(2 * time.Second, periods)
+}
+
+// cam_available reports whether a remembered device is connected,
+// following its USB bus id when the node moved.
+cam_available :: proc(path, bus: string) -> bool {
+	if cam_probe(path) {
+		return true
+	}
+	moved := cam_find_bus(bus)
+	if moved == "" {
+		return false
+	}
+	delete(moved)
+	return true
+}
+
+// cam_try_resolved starts the pipeline on a remembered device,
+// following its USB bus id when the node moved.
+cam_try_resolved :: proc(path, bus: string) -> bool {
+	if cam_probe(path) {
+		dbg_log("resolve %s probe-ok", path)
+		return cam_pipeline_try(path)
+	}
+	moved := cam_find_bus(bus)
+	dbg_log("resolve %s moved=%s", path, moved)
+	if moved == "" {
+		return false
+	}
+	ok := cam_pipeline_try(moved)
+	delete(moved)
+	return ok
+}
+
+// cam_recover retries the camera once per tick after a device loss.
+// Auto mode prefers the primary device and keeps a stand-in while the
+// primary is gone, an explicit pick only reopens its own device.
+cam_recover :: proc() {
+	dead := sync.atomic_load(&cam_dead) != 0
+	dbg_log("recover dead=%v fallback=%v dev=%s", dead, cam_fallback, cam_dev)
+	if !dead {
+		if !cam_fallback || cam_primary == "" || !cam_available(cam_primary, cam_primary_bus) {
+			return
+		}
+	}
+	cam_pipeline_teardown()
+	ok := false
+	if cam_auto {
+		ok = cam_primary != "" && cam_try_resolved(cam_primary, cam_primary_bus)
+		if ok {
+			dev_set_name(&dev_cam_name, cam_primary_name)
+		} else {
+			ok = cam_pipeline_try_any()
+		}
+	} else {
+		ok = cam_try_resolved(cam_dev, cam_bus)
+	}
+	if !ok {
+		dbg_log("recover fail")
+		sync.atomic_store(&cam_ready, 0)
+		sync.atomic_store(&cam_dead, 1)
+		sync.atomic_store(&send_video, 0)
+		if self_engine.e != nil {
+			slot_close(&self_engine)
+			layout_apply()
+		}
+		return
+	}
+	sync.atomic_store(&cam_dead, 0)
+	sync.atomic_store(&cam_off, 0)
+	sync.atomic_store(&send_video, 1)
+	fb := cam_auto && cam_dev != cam_primary
+	slot_close(&self_engine)
+	layout_apply()
+	config_collect()
+	config_store()
+	dbg_log("recover ok engine=%v self=%dx%d", self_engine.e != nil, self_w, self_h)
+	sess_update(
+		&sess,
+		sync.atomic_load(&send_video) != 0,
+		sync.atomic_load(&mic_mute) == 0,
+		sync.atomic_load(&screen_send) != 0,
+	)
+	if dead {
+		if fb {
+			toast_show(tprintf("camera switched to %s", dev_cam_name), 1)
+		} else {
+			toast_show("camera reconnected", 1)
+		}
+	} else {
+		toast_show("camera switched back", 1)
+	}
+	cam_fallback = fb
+}
+
+cam_switch :: proc() {
+	off := sync.atomic_load(&cam_off)
+	was_ready := sync.atomic_load(&cam_ready) != 0
+	cam_pipeline_teardown()
 	if cam_pipeline_start() {
 		if was_ready && off == 1 {
 			sync.atomic_store(&cam_off, 1)
@@ -703,8 +860,12 @@ cam_switch :: proc() {
 			sync.atomic_store(&cam_off, 0)
 			sync.atomic_store(&send_video, 1)
 		}
+		sync.atomic_store(&cam_dead, 0)
 		slot_close(&self_engine)
 		layout_apply()
+	} else {
+		sync.atomic_store(&cam_dead, 1)
+		cam_retry_at = time.now()
 	}
 	sess_update(
 		&sess,
@@ -749,14 +910,26 @@ capture_thread :: proc() {
 	last: time.Time
 	first := true
 	seq: u32
+	dbg_frames := 0
 	for sync.atomic_load(&app_stop) == 0 {
 		if sync.atomic_load(&cam_ready) == 0 {
 			time.sleep(50 * time.Millisecond)
 			continue
 		}
-		data, ok := cam_grab(&cam, 200)
-		if !ok {
+		data, state := cam_grab(&cam, 200)
+		if state == .Lost {
+			dbg_log("grab lost")
+			sync.atomic_store(&cam_ready, 0)
+			sync.atomic_store(&cam_dead, 1)
 			continue
+		}
+		if state != .Frame {
+			continue
+		}
+		sync.atomic_add(&cam_frame_seq, 1)
+		if dbg_frames < 3 {
+			dbg_frames += 1
+			dbg_log("frame %dx%d", cam.w, cam.h)
 		}
 		now := time.now()
 		due := first || time.since(last) >= interval
@@ -1617,6 +1790,19 @@ ms_now :: proc() -> u32 {
 	return u32(i64(time.since(epoch)) / 1_000_000)
 }
 
+// dbg_log appends one line to the camera debug log while the recovery
+// path is under investigation.
+dbg_log :: proc(fmtstr: string, args: ..any) {
+	f, _ := os.open(
+		"/tmp/toom-cam.log",
+		{.Write, .Append, .Create},
+		{.Read_User, .Write_User, .Read_Group, .Read_Other},
+	)
+	line := fmt.tprintf("[%u] %s\n", ms_now(), fmt.tprintf(fmtstr, ..args))
+	_, _ = os.write(f, transmute([]u8)line)
+	_ = os.close(f)
+}
+
 epoch: time.Time
 
 // conf_key applies one meeting key. It returns true when the user
@@ -1675,6 +1861,8 @@ conf_key :: proc(k: Key) -> bool {
 				sync.atomic_store(&cam_off, off)
 				sync.atomic_store(&send_video, 1 - off)
 				if off == 1 {
+					sync.atomic_store(&cam_dead, 0)
+					cam_fallback = false
 					slot_close(&self_engine)
 					sync.atomic_store(&layout_dirty, 1)
 					toast_show("camera off", 0)
@@ -1684,11 +1872,15 @@ conf_key :: proc(k: Key) -> bool {
 				}
 			} else if cam_pipeline_start() {
 				sync.atomic_store(&cam_off, 0)
+				sync.atomic_store(&cam_dead, 0)
 				sync.atomic_store(&send_video, 1)
 				slot_close(&self_engine)
 				layout_apply()
 				toast_show("camera on", 1)
 			} else {
+				sync.atomic_store(&cam_off, 0)
+				sync.atomic_store(&cam_dead, 1)
+				cam_retry_at = time.now()
 				msg := "camera failed to open"
 				if cam_fail != "" {
 					msg = cam_fail
@@ -1783,6 +1975,12 @@ conference_run :: proc(
 	sync.atomic_store(&cam_ready, 0)
 	sync.atomic_store(&cam_off, 1)
 	sync.atomic_store(&send_video, 0)
+	sync.atomic_store(&cam_dead, 0)
+	sync.atomic_store(&cam_frame_seq, 0)
+	cam_fallback = false
+	cam_watch_seq = 0
+	cam_watch_at = time.now()
+	cam_retry_at = time.now()
 	sync.atomic_store(&tx_media_n, 0)
 	sync.atomic_store(&rx_media_n, 0)
 	if cam_on && cam_pipeline_start() {
@@ -1829,6 +2027,7 @@ conference_run :: proc(
 	}
 
 	last_ui: time.Time
+	dbg_hb: time.Time
 	for sync.atomic_load(&app_stop) == 0 {
 		tmp := runtime.default_temp_allocator_temp_begin()
 		defer runtime.default_temp_allocator_temp_end(tmp)
@@ -1856,6 +2055,34 @@ conference_run :: proc(
 		}
 		if sync.atomic_load(&layout_dirty) != 0 {
 			layout_apply()
+		}
+		if sync.atomic_load(&cam_off) == 0 {
+			seq := sync.atomic_load(&cam_frame_seq)
+			if seq != cam_watch_seq {
+				cam_watch_seq = seq
+				cam_watch_at = time.now()
+			} else if sync.atomic_load(&cam_ready) != 0 &&
+			   time.since(cam_watch_at) > cam_watchdog() {
+				dbg_log("watchdog trip")
+				sync.atomic_store(&cam_dead, 1)
+			}
+			if (sync.atomic_load(&cam_dead) != 0 || cam_fallback) &&
+			   time.since(cam_retry_at) >= 0 {
+				cam_retry_at = time.time_add(time.now(), 1 * time.Second)
+				cam_recover()
+			}
+			if time.since(dbg_hb) >= 3 * time.Second {
+				dbg_hb = time.now()
+				dbg_log(
+					"hb ready=%d dead=%d seq=%d engine=%v self=%dx%d",
+					sync.atomic_load(&cam_ready),
+					sync.atomic_load(&cam_dead),
+					sync.atomic_load(&cam_frame_seq),
+					self_engine.e != nil,
+					self_w,
+					self_h,
+				)
+			}
 		}
 		sync.mutex_lock(&layout_heal_mu)
 		heal := layout_heal_pending && time.since(layout_heal_at) >= 0
