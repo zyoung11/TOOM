@@ -27,7 +27,7 @@ Dependencies: `odin`, `cc`, `git`, `cmake`, `meson`, `ninja`, `nasm`.
 sh build.sh
 ```
 
-For release builds use `sh build-in-container.sh`. It builds in a vanilla Arch container so the glibc startup objects carry no raised ISA level.
+For release builds use `sh build-in-container.sh`. It builds in a vanilla Arch container so the glibc startup objects carry no raised ISA level and the static C++ runtime carries no AVX-512 code.
 
 ## Usage
 

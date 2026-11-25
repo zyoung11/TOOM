@@ -25,7 +25,7 @@
 sh build.sh
 ```
 
-发布构建用 `sh build-in-container.sh`，在纯净 Arch 容器里构建，glibc 启动文件不会带上抬高的 ISA 级别声明。
+发布构建用 `sh build-in-container.sh`，在纯净 Arch 容器里构建，glibc 启动文件不会带上抬高的 ISA 级别声明，静态 C++ 运行时也不含 AVX-512 指令。
 
 ## 使用
 
