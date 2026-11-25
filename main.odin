@@ -8,7 +8,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 
-VERSION :: "0.1.0"
+VERSION :: "0.1.1"
 
 A_MAUVE :: "\x1b[38;2;198;160;246m"
 A_BOLD :: "\x1b[1m"

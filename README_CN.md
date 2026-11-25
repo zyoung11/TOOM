@@ -25,6 +25,8 @@
 sh build.sh
 ```
 
+发布构建用 `sh build-in-container.sh`，在纯净 Arch 容器里构建，glibc 启动文件不会带上抬高的 ISA 级别声明。
+
 ## 使用
 
 ### 服务端
@@ -80,6 +82,7 @@ sudo ./toom uninstall           # 停止并移除服务
 
 ## 限制
 
+- 需要支持 AVX2 的 CPU
 - 仅 IPv4，不做 NAT 穿透。服务端必须能被 UDP 直达
 - 会议码是入会凭证
 - 窗口共享需要 niri，目前只支持浮动窗口

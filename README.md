@@ -27,6 +27,8 @@ Dependencies: `odin`, `cc`, `git`, `cmake`, `meson`, `ninja`, `nasm`.
 sh build.sh
 ```
 
+For release builds use `sh build-in-container.sh`. It builds in a vanilla Arch container so the glibc startup objects carry no raised ISA level.
+
 ## Usage
 
 ### Server
@@ -82,6 +84,7 @@ Everything is in `~/.config/toom/config.json`, written back on every change. `ke
 
 ## Limitations
 
+- Needs a CPU with AVX2
 - IPv4 only, no NAT traversal. The server must be reachable by UDP
 - The meeting code is the join credential
 - Window sharing needs niri, floating windows only for now

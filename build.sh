@@ -168,6 +168,7 @@ cc -O2 -c wlshim.c -o wlshim.o
 cc -O2 -Iproto -c screen_shim.c -o screen_shim.o
 
 echo "[i] building TOOM client"
-odin build . -o:speed -out:toom -extra-linker-flags:"-static-libstdc++ -static-libgcc -Wl,--allow-multiple-definition"
+odin build . -o:speed -microarch:x86-64-v3 -out:toom -extra-linker-flags:"-static-libstdc++ -static-libgcc -Wl,--allow-multiple-definition"
+objcopy --remove-section=.note.gnu.property toom
 
 echo "[+] build complete"
