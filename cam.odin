@@ -386,9 +386,7 @@ cam_ungrab :: proc(cam: ^Camera) {
 		memory = V4L2_MEMORY_MMAP,
 	}
 	b.index = u32(cam.cur)
-	if cam_ioctl(cam.fd, VIDIOC_QBUF, &b) != 0 {
-		dbg_log("qbuf errno=%d", cam_errno_loc()^)
-	}
+	cam_ioctl(cam.fd, VIDIOC_QBUF, &b)
 	cam.grabbed = false
 }
 

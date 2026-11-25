@@ -726,12 +726,9 @@ cam_pipeline_teardown :: proc() {
 cam_pipeline_try :: proc(dev: string) -> bool {
 	cam_set(dev)
 	if !cam_start(&cam, dev, cam_w_req, cam_h_req) {
-		dbg_log("try %s start-fail %s", dev, cam_fail)
 		return false
 	}
-	ok := cam_pipeline_build()
-	dbg_log("try %s build=%v self=%dx%d", dev, ok, self_w, self_h)
-	return ok
+	return cam_pipeline_build()
 }
 
 // cam_pipeline_try_any starts the pipeline on the first camera that
@@ -775,11 +772,9 @@ cam_available :: proc(path, bus: string) -> bool {
 // following its USB bus id when the node moved.
 cam_try_resolved :: proc(path, bus: string) -> bool {
 	if cam_probe(path) {
-		dbg_log("resolve %s probe-ok", path)
 		return cam_pipeline_try(path)
 	}
 	moved := cam_find_bus(bus)
-	dbg_log("resolve %s moved=%s", path, moved)
 	if moved == "" {
 		return false
 	}
@@ -793,7 +788,6 @@ cam_try_resolved :: proc(path, bus: string) -> bool {
 // primary is gone, an explicit pick only reopens its own device.
 cam_recover :: proc() {
 	dead := sync.atomic_load(&cam_dead) != 0
-	dbg_log("recover dead=%v fallback=%v dev=%s", dead, cam_fallback, cam_dev)
 	if !dead {
 		if !cam_fallback || cam_primary == "" || !cam_available(cam_primary, cam_primary_bus) {
 			return
@@ -812,7 +806,6 @@ cam_recover :: proc() {
 		ok = cam_try_resolved(cam_dev, cam_bus)
 	}
 	if !ok {
-		dbg_log("recover fail")
 		sync.atomic_store(&cam_ready, 0)
 		sync.atomic_store(&cam_dead, 1)
 		sync.atomic_store(&send_video, 0)
@@ -830,7 +823,6 @@ cam_recover :: proc() {
 	layout_apply()
 	config_collect()
 	config_store()
-	dbg_log("recover ok engine=%v self=%dx%d", self_engine.e != nil, self_w, self_h)
 	sess_update(
 		&sess,
 		sync.atomic_load(&send_video) != 0,
@@ -910,7 +902,6 @@ capture_thread :: proc() {
 	last: time.Time
 	first := true
 	seq: u32
-	dbg_frames := 0
 	for sync.atomic_load(&app_stop) == 0 {
 		if sync.atomic_load(&cam_ready) == 0 {
 			time.sleep(50 * time.Millisecond)
@@ -918,7 +909,6 @@ capture_thread :: proc() {
 		}
 		data, state := cam_grab(&cam, 200)
 		if state == .Lost {
-			dbg_log("grab lost")
 			sync.atomic_store(&cam_ready, 0)
 			sync.atomic_store(&cam_dead, 1)
 			continue
@@ -927,10 +917,6 @@ capture_thread :: proc() {
 			continue
 		}
 		sync.atomic_add(&cam_frame_seq, 1)
-		if dbg_frames < 3 {
-			dbg_frames += 1
-			dbg_log("frame %dx%d", cam.w, cam.h)
-		}
 		now := time.now()
 		due := first || time.since(last) >= interval
 		if !due {
@@ -1790,19 +1776,6 @@ ms_now :: proc() -> u32 {
 	return u32(i64(time.since(epoch)) / 1_000_000)
 }
 
-// dbg_log appends one line to the camera debug log while the recovery
-// path is under investigation.
-dbg_log :: proc(fmtstr: string, args: ..any) {
-	f, _ := os.open(
-		"/tmp/toom-cam.log",
-		{.Write, .Append, .Create},
-		{.Read_User, .Write_User, .Read_Group, .Read_Other},
-	)
-	line := fmt.tprintf("[%u] %s\n", ms_now(), fmt.tprintf(fmtstr, ..args))
-	_, _ = os.write(f, transmute([]u8)line)
-	_ = os.close(f)
-}
-
 epoch: time.Time
 
 // conf_key applies one meeting key. It returns true when the user
@@ -2027,7 +2000,6 @@ conference_run :: proc(
 	}
 
 	last_ui: time.Time
-	dbg_hb: time.Time
 	for sync.atomic_load(&app_stop) == 0 {
 		tmp := runtime.default_temp_allocator_temp_begin()
 		defer runtime.default_temp_allocator_temp_end(tmp)
@@ -2063,25 +2035,12 @@ conference_run :: proc(
 				cam_watch_at = time.now()
 			} else if sync.atomic_load(&cam_ready) != 0 &&
 			   time.since(cam_watch_at) > cam_watchdog() {
-				dbg_log("watchdog trip")
 				sync.atomic_store(&cam_dead, 1)
 			}
 			if (sync.atomic_load(&cam_dead) != 0 || cam_fallback) &&
 			   time.since(cam_retry_at) >= 0 {
 				cam_retry_at = time.time_add(time.now(), 1 * time.Second)
 				cam_recover()
-			}
-			if time.since(dbg_hb) >= 3 * time.Second {
-				dbg_hb = time.now()
-				dbg_log(
-					"hb ready=%d dead=%d seq=%d engine=%v self=%dx%d",
-					sync.atomic_load(&cam_ready),
-					sync.atomic_load(&cam_dead),
-					sync.atomic_load(&cam_frame_seq),
-					self_engine.e != nil,
-					self_w,
-					self_h,
-				)
 			}
 		}
 		sync.mutex_lock(&layout_heal_mu)
